@@ -45,6 +45,17 @@ struct Vo: AsyncParsableCommand {
     @Option(name: .long, help: "Stream finalized chunks as JSONL to this path (written incrementally so you can `tail -f` it; memory stays bounded for long sessions). Skips the interactive save prompt.")
     var transcript: String?
 
+    // MARK: - Summary (Apple Intelligence)
+
+    @Flag(name: .long, help: "Generate an on-device AI meeting summary / minutes at the end of the session using Apple Intelligence Foundation Models.")
+    var summary: Bool = false
+
+    @Option(name: .long, help: "Save the generated summary to this file (Markdown). Without this, the summary is printed to STDOUT in TTY mode.")
+    var summaryOut: String?
+
+    @Option(name: .long, help: "Custom prompt or instructions for the AI summary (defaults to structured meeting minutes).")
+    var summaryPrompt: String?
+
     // MARK: - Run
 
     func run() async throws {
@@ -62,7 +73,10 @@ struct Vo: AsyncParsableCommand {
             voiceProcessing: voiceProcessing,
             selectDevice: selectDevice,
             input: input,
-            transcript: transcript
+            transcript: transcript,
+            summary: summary || summaryOut != nil || summaryPrompt != nil,
+            summaryOut: summaryOut,
+            summaryPrompt: summaryPrompt
         )
     }
 }

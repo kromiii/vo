@@ -1215,6 +1215,7 @@ struct Pipeline {
         await stops.register(AsyncStopper(action: stopper))
 
         let inputBuffers = perLocale.map { $0.inputBuffer }
+        let analyzers = perLocale.map { $0.analyzer }
 
         // Resampler: pull one buffer at a time from the file, bridge gaps with silence
         // exactly like runChannel does for live capture, and send into every bounded
@@ -1230,6 +1231,7 @@ struct Pipeline {
                     timed = try source.nextBuffer()
                 } catch {
                     for buf in inputBuffers { await buf.finish() }
+                    for a in analyzers { try? await a.finalizeAndFinishThroughEndOfInput() }
                     throw VoError.inputFileReadFailed(url: inputURL, underlying: error)
                 }
                 guard let timed else { break }
@@ -1246,6 +1248,7 @@ struct Pipeline {
                 }
             }
             for buf in inputBuffers { await buf.finish() }
+            for a in analyzers { try? await a.finalizeAndFinishThroughEndOfInput() }
         }
 
         // Same parallel warm-up as runChannel: prepareToAnalyze + start fan out
@@ -1640,11 +1643,22 @@ enum VoError: Error, CustomStringConvertible {
     case inputFileReadFailed(url: URL, underlying: Error)
     case audioDeviceNotReady(channel: AudioChannel, format: String)
     case audioTapInstallFailed(channel: AudioChannel, underlying: Error)
+    case foundationModelNotAvailable(reason: String)
+    case summarizationFailed(reason: String)
 
     var description: String {
         switch self {
         case .noCompatibleAudioFormat:
             return "No audio format compatible with SpeechTranscriber is available on this device."
+
+        case .foundationModelNotAvailable(let reason):
+            return """
+            Foundation Models (Apple Intelligence) is not available: \(reason)
+            Check System Settings > Apple Intelligence & Siri. (Run `vo --doctor` for diagnostics.)
+            """
+
+        case .summarizationFailed(let reason):
+            return "Failed to generate meeting summary: \(reason)"
 
         case .audioDeviceNotReady(let channel, let format):
             return """
