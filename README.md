@@ -53,7 +53,7 @@ $ vo --no-speaker                     # Mic only
 $ vo --no-mic --src en-US --dst ja-JP # Speaker only, with translation
 $ vo --input meeting.m4a              # Transcribe an on-disk audio file instead
 $ vo --summary                        # Transcribe and generate on-device meeting minutes at exit
-$ vo --summary --summary-out min.md   # Save meeting minutes directly to Markdown
+$ vo --summary min.md                 # Save meeting minutes directly to Markdown
 $ vo --select-device                  # Pick & pin the mic / speaker at startup
 $ vo --json | jq                      # JSONL output for piping
 $ vo --doctor                         # Environment diagnostics

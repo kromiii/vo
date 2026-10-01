@@ -47,7 +47,7 @@ Flat command (no subcommands). `--doctor` is the only "different mode"; everythi
 ```
 vo [--src LOCALE] [--dst LOCALE] [--no-mic] [--no-speaker]
    [--voice-processing] [--select-device] [--input PATH]
-   [--transcript PATH] [--summary] [--summary-out PATH]
+   [--transcript PATH] [--summary [PATH]]
    [--summary-prompt PROMPT] [--doctor] [--json]
 ```
 
@@ -59,8 +59,7 @@ vo [--src LOCALE] [--dst LOCALE] [--no-mic] [--no-speaker]
 - TCC attribution: vo always re-execs itself as its own TCC responsible process (via the private `responsibility_spawnattrs_setdisclaim`) so the Microphone / Speech / Audio Recording grants attach to vo, not the launching terminal. There is no flag; it runs unconditionally in `Listen.swift` after the `mic || speaker` validation. The re-exec is gated on the embedded `Info.plist` being present (`Responsibility.hasEmbeddedInfoPlist`), so the release / `build.sh` binary claims its own identity while a plain `swift build` binary (no usage descriptions, would be killed on mic access) stays on the terminal's identity. The parent becomes a thin launcher that waits and forwards the child's exit status; any failure falls back to running in-process. Because the released binary is ad-hoc signed, macOS re-prompts after each release (the signing identifier stays `io.github.k1LoW/vo`, so it's one entry, not duplicates); a stable `VO_CODESIGN_IDENTITY` removes the re-prompt. See `Responsibility.swift`.
 - `--json` forces JSONL output. Without it, auto-detects: TTY → ANSI redraw, non-TTY → JSONL.
 - `--transcript PATH` streams finalized chunks as JSONL into `PATH`. Without it, vo streams the same JSONL into a temp file under `TMPDIR` and at Ctrl-C asks `Save transcript to ./vo-<stamp>.jsonl? [Y/n/<path>]`. If the chosen target (or `PATH` itself) exists, vo prompts `Overwrite? [y/N]`. Memory usage stays bounded across long sessions because nothing is buffered.
-- `--summary` generates on-device meeting minutes at session exit using Apple Intelligence Foundation Models (`SystemLanguageModel`). Fails fast if Foundation Models is not available. Also triggers temporary transcript logging so memory stays bounded even on long sessions.
-- `--summary-out PATH` writes the generated Markdown meeting minutes to `PATH`.
+- `--summary [PATH]` generates on-device meeting minutes at session exit using Apple Intelligence Foundation Models (`SystemLanguageModel`). If `PATH` is specified, writes the generated Markdown to that file; otherwise prints to STDOUT in TTY mode. Fails fast if Foundation Models is not available. Also triggers temporary transcript logging so memory stays bounded even on long sessions.
 - `--summary-prompt PROMPT` customizes the instructions passed to the Foundation Model. Defaults to structured meeting minutes (Overview, Key Points, Decisions, Action Items).
 
 ## Architecture
