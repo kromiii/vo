@@ -67,4 +67,50 @@ struct SummarizerTests {
         #expect(formatted.contains("[10:00:00] No channel."))
         #expect(formatted.contains("- Neither."))
     }
+
+    @Test func chunkPromptIncludesRangeAndLanguageInstruction() {
+        let prompt = SummaryPrompts.chunkPrompt(
+            index: 0,
+            startTimestamp: "10:00:00",
+            endTimestamp: "10:05:00",
+            chunkText: "[mic] Discussion topic"
+        )
+        #expect(prompt.contains("The following is part 1 (utterances 10:00:00 to 10:05:00)"))
+        #expect(prompt.contains("IMPORTANT: Respond in the primary language used in the transcript."))
+        #expect(prompt.contains("[mic] Discussion topic"))
+    }
+
+    @Test func chunkPromptHandlesEmptyTimestamps() {
+        let prompt = SummaryPrompts.chunkPrompt(
+            index: 1,
+            startTimestamp: nil,
+            endTimestamp: nil,
+            chunkText: "Sample text"
+        )
+        #expect(prompt.contains("The following is part 2 of a meeting transcript."))
+        #expect(!prompt.contains("utterances"))
+    }
+
+    @Test func finalPromptInstructsSameLanguage() {
+        let prompt = SummaryPrompts.finalPrompt(transcript: "Transcript content")
+        #expect(prompt.contains("Analyze the meeting transcript below"))
+        #expect(prompt.contains("IMPORTANT: Write the entire response in the primary language used in the transcript"))
+        #expect(prompt.contains("Transcript content"))
+    }
+
+    @Test func finalPromptHandlesIntermediateSummary() {
+        let prompt = SummaryPrompts.finalPrompt(transcript: "Part summaries", isIntermediateSummary: true)
+        #expect(prompt.contains("Analyze the intermediate summaries of each part of the meeting below"))
+    }
+
+    @Test func finalPromptAppliesCustomPrompt() {
+        let prompt = SummaryPrompts.finalPrompt(
+            transcript: "Transcript content",
+            customPrompt: "Custom summarization rule"
+        )
+        #expect(prompt.contains("Custom summarization rule"))
+        #expect(prompt.contains("Transcript content"))
+        #expect(!prompt.contains("Analyze the meeting transcript"))
+    }
 }
+

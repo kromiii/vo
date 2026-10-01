@@ -137,7 +137,7 @@ struct Summarizer: Sendable {
 
     private func summarizeDirect(transcript: String) async throws -> String {
         let session = LanguageModelSession()
-        let promptText = buildFinalPrompt(transcript: transcript)
+        let promptText = SummaryPrompts.finalPrompt(transcript: transcript, customPrompt: customPrompt)
         let response = try await session.respond(to: promptText)
         return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -157,21 +157,20 @@ struct Summarizer: Sendable {
         for (idx, chunk) in chunks.enumerated() {
             let chunkText = Self.formatTranscript(chunk)
             let session = LanguageModelSession()
-            let prompt = """
-            以下は会議文字起こしの第\(idx + 1)パート（発話 \(chunk.first?.timestamp ?? "") 〜 \(chunk.last?.timestamp ?? "")）です。
-            このパートで話された主要な要点や決定事項、発言内容を箇条書きで3〜5項目に簡潔に要約してください。
-
-            ---
-            \(chunkText)
-            """
+            let prompt = SummaryPrompts.chunkPrompt(
+                index: idx,
+                startTimestamp: chunk.first?.timestamp,
+                endTimestamp: chunk.last?.timestamp,
+                chunkText: chunkText
+            )
             do {
                 let res = try await session.respond(to: prompt)
                 let text = res.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                partialSummaries.append("### パート \(idx + 1)\n\(text)")
+                partialSummaries.append("### Part \(idx + 1)\n\(text)")
             } catch {
                 // If a sub-chunk fails, include its raw text truncated as fallback
                 let fallback = chunk.prefix(10).map { "\($0.channel): \($0.text)" }.joined(separator: "; ")
-                partialSummaries.append("### パート \(idx + 1)\n(要約生成エラー: \(fallback)...)")
+                partialSummaries.append("### Part \(idx + 1)\n(Summarization failed: \(fallback)...)")
             }
         }
 
@@ -179,46 +178,13 @@ struct Summarizer: Sendable {
 
         // Final reduce pass
         let reduceSession = LanguageModelSession()
-        let finalPrompt = buildFinalPrompt(transcript: combinedSummaries, isIntermediateSummary: true)
+        let finalPrompt = SummaryPrompts.finalPrompt(
+            transcript: combinedSummaries,
+            isIntermediateSummary: true,
+            customPrompt: customPrompt
+        )
         let finalResponse = try await reduceSession.respond(to: finalPrompt)
         return finalResponse.content.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: - Prompt Building
-
-    private func buildFinalPrompt(transcript: String, isIntermediateSummary: Bool = false) -> String {
-        if let customPrompt {
-            return """
-            \(customPrompt)
-
-            ---
-            \(transcript)
-            """
-        }
-
-        let sourceDescription = isIntermediateSummary ? "会議の各パートの中間要約" : "会議の文字起こし"
-
-        return """
-        以下の\(sourceDescription)を分析し、Markdown形式で構造化された議事録を作成してください。
-
-        # 会議議事録
-
-        ### 概要
-        （会議の全体的な目的・サマリーを3〜5文で簡潔に記載）
-
-        ### 主な議論・要点
-        （議論された主要な議題とポイントを箇条書きで記載）
-
-        ### 決定事項
-        （合意に至った決定事項を箇条書きで記載。なければ「特になし」）
-
-        ### アクションアイテム (ToDo)
-        - [ ] 【担当者】タスク内容 (期限があれば記載)
-        （アクションアイテムが明確でない場合は「特になし」）
-
-        ---
-        \(transcript)
-        """
     }
 
     // MARK: - Helper

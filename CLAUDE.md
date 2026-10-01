@@ -112,6 +112,7 @@ The whole pipeline is one TaskGroup orchestrating two parallel channels (mic + s
 | `NSExceptionBridge.swift` | `catchingNSException(_:)`. Wraps the `VoObjC` target's `@try` shim so a Cocoa API that reports failure by raising (`AVAudioNode.installTap` on a format mismatch) becomes a Swift error instead of an abort. The shim lives in `Sources/VoObjC` because Swift cannot catch an `NSException` at all. |
 | `SessionLog.swift` | Streaming JSONL transcript file. Two modes: explicit (`--transcript <path>` writes directly there) or temp (`TMPDIR` file moved/discarded on exit). Owns the overwrite-confirm and `Save transcript?` prompts. |
 | `Summarizer.swift` | On-device meeting minutes & summarization actor/struct using Apple Intelligence `FoundationModels` (`SystemLanguageModel`). Supports hierarchical (Map-Reduce) summarization for long transcripts. |
+| `SummaryPrompts.swift` | Prompt templates and builders for Foundation Models summarization (intermediate chunk and structured final meeting minutes). |
 
 ### Key invariants in `StreamRenderer`
 
