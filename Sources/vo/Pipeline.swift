@@ -1215,7 +1215,6 @@ struct Pipeline {
         await stops.register(AsyncStopper(action: stopper))
 
         let inputBuffers = perLocale.map { $0.inputBuffer }
-        let analyzers = perLocale.map { $0.analyzer }
 
         // Resampler: pull one buffer at a time from the file, bridge gaps with silence
         // exactly like runChannel does for live capture, and send into every bounded
@@ -1231,7 +1230,6 @@ struct Pipeline {
                     timed = try source.nextBuffer()
                 } catch {
                     for buf in inputBuffers { await buf.finish() }
-                    for a in analyzers { try? await a.finalizeAndFinishThroughEndOfInput() }
                     throw VoError.inputFileReadFailed(url: inputURL, underlying: error)
                 }
                 guard let timed else { break }
@@ -1248,7 +1246,6 @@ struct Pipeline {
                 }
             }
             for buf in inputBuffers { await buf.finish() }
-            for a in analyzers { try? await a.finalizeAndFinishThroughEndOfInput() }
         }
 
         // Same parallel warm-up as runChannel: prepareToAnalyze + start fan out

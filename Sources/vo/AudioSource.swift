@@ -456,14 +456,8 @@ final class FileSource: @unchecked Sendable {
         let isStopped = stopped
         lock.unlock()
         if isStopped { return nil }
-        if file.framePosition >= file.length { return nil }
         guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunkFrames) else { return nil }
-        do {
-            try file.read(into: buf, frameCount: chunkFrames)
-        } catch {
-            if file.framePosition >= file.length { return nil }
-            throw error
-        }
+        try file.read(into: buf, frameCount: chunkFrames)
         if buf.frameLength == 0 { return nil }
         let timed = TimedBuffer(buffer: buf, hostTime: cursor)
         if format.sampleRate > 0 {
