@@ -291,7 +291,7 @@ private func finalizeSession(
                 summaryMarkdown = try await summarizer.summarize(lines: transcriptLinesFallback)
             }
 
-            let summaryOut = await summarizer.summaryOut
+            let summaryOut = summarizer.summaryOut
             if let summaryOut {
                 let resolved = (summaryOut as NSString).expandingTildeInPath
                 let msg = "Saved meeting summary: \(resolved)"
