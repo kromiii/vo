@@ -115,6 +115,7 @@ func runListen(
     // single-channel live modes (--no-mic / --no-speaker) suppress [mic] / [spk].
     let showChannelLabel = inputURL == nil && mic && speaker
 
+    let isSummaryView = isTTY && summary
     let summarizer: Summarizer? = summary ? Summarizer(summaryOut: summaryOut, customPrompt: summaryPrompt) : nil
 
     let renderer = StreamRenderer(
@@ -124,8 +125,15 @@ func runListen(
         translationEnabled: targetLocales != nil,
         showChannelLabel: showChannelLabel,
         logSink: sessionLog,
-        summarizer: summarizer
+        summarizer: summarizer,
+        isSummaryView: isSummaryView
     )
+
+    if let summarizer, isSummaryView {
+        await summarizer.setOnUpdate { [weak renderer] updatedSummary, isUpdating in
+            await renderer?.updateLiveSummary(updatedSummary, isUpdating: isUpdating)
+        }
+    }
 
     let pipeline = Pipeline(
         sourceLocales: sourceLocales,
@@ -141,7 +149,9 @@ func runListen(
 
     let startedAt = Date()
     if isTTY {
-        if let inputURL {
+        if isSummaryView {
+            await renderer.renderInitialSummaryView()
+        } else if let inputURL {
             printFileBanner(
                 inputURL: inputURL,
                 sourceLocales: sourceLocales,
@@ -187,7 +197,8 @@ func runListen(
                 isTTY: isTTY,
                 count: count,
                 duration: Date().timeIntervalSince(startedAt),
-                summarizer: summarizer
+                summarizer: summarizer,
+                isSummaryView: isSummaryView
             )
             Foundation.exit(0)
         }
@@ -204,7 +215,8 @@ func runListen(
             isTTY: isTTY,
             count: count,
             duration: Date().timeIntervalSince(startedAt),
-            summarizer: summarizer
+            summarizer: summarizer,
+            isSummaryView: isSummaryView
         )
     } else {
         // The SIGINT handler claimed finalization and will exit the process.
@@ -239,7 +251,8 @@ private func finalizeSession(
     isTTY: Bool,
     count: Int,
     duration: TimeInterval,
-    summarizer: Summarizer?
+    summarizer: Summarizer?,
+    isSummaryView: Bool = false
 ) async {
     // If summary was requested, read the transcript lines from the session log BEFORE
     // resolveSessionLog potentially discards the temp file, as a fallback source.
@@ -253,17 +266,17 @@ private func finalizeSession(
 
     if let sessionLog {
         // Gate the save prompt on isTTY (renderer mode), not just on canPromptForLog().
-        // Otherwise `vo --json` run from an interactive shell — where STDIN and STDOUT
-        // are both TTYs but the renderer is emitting machine-readable JSONL — would
-        // interleave the prompt text into the JSONL stream and corrupt it.
-        let status = resolveSessionLog(sessionLog: sessionLog, canPrompt: isTTY && canPromptForLog())
-        if isTTY {
+        // When in isSummaryView, don't show the interactive prompt on STDOUT to preserve
+        // the clean live summary view.
+        let canPrompt = isTTY && !isSummaryView && canPromptForLog()
+        let status = resolveSessionLog(sessionLog: sessionLog, canPrompt: canPrompt)
+        if isTTY && !isSummaryView {
             if let status { print(status) }
         } else if let status, sessionLog.isExplicit {
             FileHandle.standardError.write(Data((status + "\n").utf8))
         }
     }
-    if isTTY {
+    if isTTY && !isSummaryView {
         printSummary(count: count, duration: duration)
     }
 
@@ -277,11 +290,13 @@ private func finalizeSession(
             return
         }
 
-        let notice = "Finalizing meeting summary with Apple Intelligence..."
-        if isTTY {
-            print("\n\u{001B}[38;5;244m\(notice)\u{001B}[0m")
-        } else {
-            FileHandle.standardError.write(Data((notice + "\n").utf8))
+        if !isSummaryView {
+            let notice = "Finalizing meeting summary with Apple Intelligence..."
+            if isTTY {
+                print("\n\u{001B}[38;5;244m\(notice)\u{001B}[0m")
+            } else {
+                FileHandle.standardError.write(Data((notice + "\n").utf8))
+            }
         }
 
         do {
@@ -292,7 +307,20 @@ private func finalizeSession(
             }
 
             let summaryOut = summarizer.summaryOut
-            if let summaryOut {
+            if isSummaryView {
+                // Render final clean summary screen
+                var finalScreen = "\u{001B}[H\u{001B}[J"
+                finalScreen += "\u{001B}[1;36mvo\u{001B}[0m \u{001B}[38;5;244m• Meeting Summary (Apple Intelligence)\u{001B}[0m\n"
+                finalScreen += "\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m\n\n"
+                finalScreen += summaryMarkdown + "\n\n"
+                finalScreen += "\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m\n"
+                FileHandle.standardOutput.write(Data(finalScreen.utf8))
+                printSummary(count: count, duration: duration)
+                if let summaryOut {
+                    let resolved = (summaryOut as NSString).expandingTildeInPath
+                    print("Saved meeting summary: \(resolved)")
+                }
+            } else if let summaryOut {
                 let resolved = (summaryOut as NSString).expandingTildeInPath
                 let msg = "Saved meeting summary: \(resolved)"
                 if isTTY {

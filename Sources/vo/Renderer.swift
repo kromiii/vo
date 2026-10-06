@@ -79,7 +79,12 @@ actor StreamRenderer: Renderer {
     private let sourceColumnPad: String
     private let logSink: SessionLog?
     private let summarizer: Summarizer?
+    private let isSummaryView: Bool
     private var appendTask: Task<Void, Never>?
+
+    private var latestSummaryText: String = ""
+    private var isSummaryGenerating: Bool = false
+    private var lastSummaryUpdateTime: String? = nil
 
     private var commitQueue: [Pair] = []
     private var volatileTexts: [AudioChannel: String] = [:]
@@ -103,7 +108,8 @@ actor StreamRenderer: Renderer {
         showChannelLabel: Bool = true,
         out: FileHandle = .standardOutput,
         logSink: SessionLog? = nil,
-        summarizer: Summarizer? = nil
+        summarizer: Summarizer? = nil,
+        isSummaryView: Bool = false
     ) {
         self.mode = mode
         self.out = out
@@ -116,12 +122,14 @@ actor StreamRenderer: Renderer {
         self.sourceColumnPad = String(repeating: " ", count: showChannelLabel ? 16 : 11)
         self.logSink = logSink
         self.summarizer = summarizer
+        self.isSummaryView = isSummaryView
     }
 
     func handle(_ event: RenderEvent) async {
         if isShuttingDown { return }
         switch event {
         case .volatile(let channel, let text):
+            if isSummaryView { return }
             volatileTexts[channel] = text
             if mode == .tty { redrawLiveRegion() }
 
@@ -134,12 +142,12 @@ actor StreamRenderer: Renderer {
                 // as a side effect, so the reverse order would blank the pending
                 // "(translating…)" lines until the next event arrives.
                 drainCommitQueue()
-                if mode == .tty { redrawLiveRegion() }
+                if mode == .tty && !isSummaryView { redrawLiveRegion() }
             } else {
                 // No translation: commit immediately, source-only.
-                if mode == .tty { clearLiveRegion() }
+                if mode == .tty && !isSummaryView { clearLiveRegion() }
                 emitSourceOnly(channel: channel, seq: seq, source: source, timing: timing, confidence: confidence, srcLangOverride: srcLangOverride)
-                if mode == .tty { redrawLiveRegion() }
+                if mode == .tty && !isSummaryView { redrawLiveRegion() }
             }
 
         case .translated(let seq, let target):
@@ -147,11 +155,11 @@ actor StreamRenderer: Renderer {
                 commitQueue[idx].target = target
             }
             drainCommitQueue()
-            if mode == .tty { redrawLiveRegion() }
+            if mode == .tty && !isSummaryView { redrawLiveRegion() }
 
         case .eof:
             drainCommitQueue(forceUntranslated: true)
-            if mode == .tty {
+            if mode == .tty && !isSummaryView {
                 clearLiveRegion()
             }
             // After eof, ignore any straggler events so audio threads can't redraw
@@ -169,7 +177,7 @@ actor StreamRenderer: Renderer {
 
     private func drainCommitQueue(forceUntranslated: Bool = false) {
         guard !commitQueue.isEmpty else { return }
-        if mode == .tty { clearLiveRegion() }
+        if mode == .tty && !isSummaryView { clearLiveRegion() }
 
         while let head = commitQueue.first {
             if let target = head.target {
@@ -182,6 +190,62 @@ actor StreamRenderer: Renderer {
                 break
             }
         }
+    }
+
+    /// Update the displayed live summary from the background Summarizer actor.
+    func updateLiveSummary(_ summary: String, isUpdating: Bool) {
+        guard isSummaryView, mode == .tty else { return }
+        self.latestSummaryText = summary
+        self.isSummaryGenerating = isUpdating
+        if !isUpdating && !summary.isEmpty {
+            self.lastSummaryUpdateTime = StreamRenderer.ttyTime.string(from: Date())
+        }
+        renderSummaryScreen()
+    }
+
+    /// Render the initial live summary screen immediately upon startup.
+    func renderInitialSummaryView() {
+        guard isSummaryView, mode == .tty else { return }
+        renderSummaryScreen()
+    }
+
+    private func renderSummaryScreen() {
+        guard isSummaryView, mode == .tty, !isShuttingDown else { return }
+        var buffer = ""
+        // Move cursor to top-left and clear to end of screen
+        buffer += "\u{001B}[H\u{001B}[J"
+
+        let statusDot: String
+        let statusText: String
+        if isSummaryGenerating {
+            statusDot = "\u{001B}[33m◌\u{001B}[0m"
+            statusText = "\u{001B}[33mUpdating summary...\u{001B}[0m"
+        } else {
+            statusDot = "\u{001B}[32m●\u{001B}[0m"
+            statusText = "\u{001B}[32mListening\u{001B}[0m"
+        }
+
+        let updatedPart: String
+        if let time = lastSummaryUpdateTime {
+            updatedPart = " | Updated at \(time)"
+        } else {
+            updatedPart = ""
+        }
+
+        buffer += "\u{001B}[1;36mvo\u{001B}[0m \u{001B}[38;5;244m• Live Meeting Summary\u{001B}[0m   \(statusDot) \(statusText) (\(finalizedCount) utterances\(updatedPart))\n"
+        buffer += "\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m\n\n"
+
+        if latestSummaryText.isEmpty {
+            buffer += "\u{001B}[38;5;244m(Listening to meeting... Initial summary will appear after capturing sufficient utterances)\u{001B}[0m\n"
+        } else {
+            buffer += latestSummaryText + "\n"
+        }
+
+        writeRaw(buffer)
+    }
+
+    private func writeRaw(_ s: String) {
+        out.write(Data(s.utf8))
     }
 
     private func feedSummarizer(channel: AudioChannel, timestamp: Date, source: String, target: String?) {
@@ -223,6 +287,13 @@ actor StreamRenderer: Renderer {
         if let jsonl { logSink?.append(jsonl) }
         feedSummarizer(channel: channel, timestamp: timing.timestamp, source: source, target: nil)
 
+        if isSummaryView {
+            if latestSummaryText.isEmpty {
+                renderSummaryScreen()
+            }
+            return
+        }
+
         switch mode {
         case .tty:
             writeLine("\(ttyHeader(timing.timestamp, channel))\(source)")
@@ -238,6 +309,13 @@ actor StreamRenderer: Renderer {
 
         if let jsonl { logSink?.append(jsonl) }
         feedSummarizer(channel: pair.channel, timestamp: pair.timing.timestamp, source: pair.source, target: target)
+
+        if isSummaryView {
+            if latestSummaryText.isEmpty {
+                renderSummaryScreen()
+            }
+            return
+        }
 
         switch mode {
         case .tty:

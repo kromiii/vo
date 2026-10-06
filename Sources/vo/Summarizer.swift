@@ -15,6 +15,15 @@ actor Summarizer {
     private var lastUpdateTime: Date = Date()
     private var totalCapturedLines: Int = 0
 
+    /// Callback invoked when a summary update completes or background update state changes.
+    /// Parameters: (currentSummary: String, isGenerating: Bool)
+    typealias UpdateHandler = @Sendable (String, Bool) async -> Void
+    private var onUpdate: UpdateHandler?
+
+    func setOnUpdate(_ handler: @escaping UpdateHandler) {
+        self.onUpdate = handler
+    }
+
     /// Threshold of pending lines before triggering an automatic background summary update.
     private let updateChunkThreshold = 25
     /// Minimum time between background summary updates if there are at least some pending lines.
@@ -127,6 +136,12 @@ actor Summarizer {
         pendingLines.append(line)
         totalCapturedLines += 1
         checkTriggerUpdate()
+        if currentSummary.isEmpty, let onUpdate {
+            let current = currentSummary
+            Task {
+                await onUpdate(current, false)
+            }
+        }
     }
 
     /// Total number of transcript lines received so far.
@@ -148,6 +163,9 @@ actor Summarizer {
             let updated = try await performSummarize(lines: lines, existingSummary: currentSummary)
             currentSummary = updated
             writeSummaryToFileIfNeeded()
+            if let onUpdate {
+                await onUpdate(currentSummary, false)
+            }
         }
 
         return currentSummary
@@ -169,6 +187,13 @@ actor Summarizer {
         let linesToSummarize = pendingLines
         pendingLines.removeAll()
 
+        if let onUpdate {
+            let current = currentSummary
+            Task {
+                await onUpdate(current, true)
+            }
+        }
+
         Task {
             await self.runBackgroundUpdate(lines: linesToSummarize)
         }
@@ -188,9 +213,15 @@ actor Summarizer {
             let updated = try await performSummarize(lines: lines, existingSummary: currentSummary)
             currentSummary = updated
             writeSummaryToFileIfNeeded()
+            if let onUpdate {
+                await onUpdate(currentSummary, false)
+            }
         } catch {
             // Re-queue the un-summarized lines at the front so they aren't lost
             pendingLines.insert(contentsOf: lines, at: 0)
+            if let onUpdate {
+                await onUpdate(currentSummary, false)
+            }
         }
     }
 
