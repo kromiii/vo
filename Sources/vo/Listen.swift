@@ -115,13 +115,16 @@ func runListen(
     // single-channel live modes (--no-mic / --no-speaker) suppress [mic] / [spk].
     let showChannelLabel = inputURL == nil && mic && speaker
 
+    let summarizer: Summarizer? = summary ? Summarizer(summaryOut: summaryOut, customPrompt: summaryPrompt) : nil
+
     let renderer = StreamRenderer(
         mode: mode,
         sourceLang: primarySource.identifier(.bcp47),
         targetLang: primaryTarget?.identifier(.bcp47) ?? "",
         translationEnabled: targetLocales != nil,
         showChannelLabel: showChannelLabel,
-        logSink: sessionLog
+        logSink: sessionLog,
+        summarizer: summarizer
     )
 
     let pipeline = Pipeline(
@@ -184,9 +187,7 @@ func runListen(
                 isTTY: isTTY,
                 count: count,
                 duration: Date().timeIntervalSince(startedAt),
-                summary: summary,
-                summaryOut: summaryOut,
-                summaryPrompt: summaryPrompt
+                summarizer: summarizer
             )
             Foundation.exit(0)
         }
@@ -203,9 +204,7 @@ func runListen(
             isTTY: isTTY,
             count: count,
             duration: Date().timeIntervalSince(startedAt),
-            summary: summary,
-            summaryOut: summaryOut,
-            summaryPrompt: summaryPrompt
+            summarizer: summarizer
         )
     } else {
         // The SIGINT handler claimed finalization and will exit the process.
@@ -240,17 +239,15 @@ private func finalizeSession(
     isTTY: Bool,
     count: Int,
     duration: TimeInterval,
-    summary: Bool,
-    summaryOut: String?,
-    summaryPrompt: String?
+    summarizer: Summarizer?
 ) async {
     // If summary was requested, read the transcript lines from the session log BEFORE
-    // resolveSessionLog potentially discards the temp file.
-    var transcriptLines: [Summarizer.TranscriptLine] = []
-    if summary, let sessionLog, count > 0 {
+    // resolveSessionLog potentially discards the temp file, as a fallback source.
+    var transcriptLinesFallback: [Summarizer.TranscriptLine] = []
+    if summarizer != nil, let sessionLog, count > 0 {
         sessionLog.close()
         if let loaded = try? Summarizer.loadTranscriptLines(fromPath: sessionLog.path) {
-            transcriptLines = loaded
+            transcriptLinesFallback = loaded
         }
     }
 
@@ -270,29 +267,33 @@ private func finalizeSession(
         printSummary(count: count, duration: duration)
     }
 
-    // Run AI meeting summarization if enabled
-    if summary {
-        if count == 0 || transcriptLines.isEmpty {
+    // Finalize AI meeting summarization if enabled
+    if let summarizer {
+        let totalCount = await summarizer.utteranceCount
+        if count == 0 && totalCount == 0 {
             if isTTY {
                 print("\u{001B}[38;5;244m(No utterances captured; skipping meeting summary)\u{001B}[0m")
             }
             return
         }
 
-        let notice = "Generating meeting summary with Apple Intelligence..."
+        let notice = "Finalizing meeting summary with Apple Intelligence..."
         if isTTY {
             print("\n\u{001B}[38;5;244m\(notice)\u{001B}[0m")
         } else {
             FileHandle.standardError.write(Data((notice + "\n").utf8))
         }
 
-        let summarizer = Summarizer(customPrompt: summaryPrompt)
         do {
-            let summaryMarkdown = try await summarizer.summarize(lines: transcriptLines)
+            var summaryMarkdown = try await summarizer.finalize()
+            if summaryMarkdown.isEmpty && !transcriptLinesFallback.isEmpty {
+                // Fallback in case streaming didn't process
+                summaryMarkdown = try await summarizer.summarize(lines: transcriptLinesFallback)
+            }
 
+            let summaryOut = await summarizer.summaryOut
             if let summaryOut {
                 let resolved = (summaryOut as NSString).expandingTildeInPath
-                try summaryMarkdown.write(toFile: resolved, atomically: true, encoding: .utf8)
                 let msg = "Saved meeting summary: \(resolved)"
                 if isTTY {
                     print(msg)

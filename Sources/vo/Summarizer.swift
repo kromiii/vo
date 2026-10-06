@@ -2,15 +2,31 @@ import Foundation
 import FoundationModels
 
 /// On-device meeting summarizer using Apple Intelligence Foundation Models (`SystemLanguageModel`).
-struct Summarizer: Sendable {
+///
+/// Supports real-time rolling / incremental summarization during a live meeting session,
+/// keeping memory and context window consumption bounded and updating the summary file live.
+actor Summarizer {
+    let summaryOut: String?
     let customPrompt: String?
 
-    init(customPrompt: String? = nil) {
+    private(set) var currentSummary: String = ""
+    private var pendingLines: [TranscriptLine] = []
+    private var isUpdating: Bool = false
+    private var lastUpdateTime: Date = Date()
+    private var totalCapturedLines: Int = 0
+
+    /// Threshold of pending lines before triggering an automatic background summary update.
+    private let updateChunkThreshold = 25
+    /// Minimum time between background summary updates if there are at least some pending lines.
+    private let updateIntervalSeconds: TimeInterval = 60.0
+
+    init(summaryOut: String? = nil, customPrompt: String? = nil) {
+        self.summaryOut = summaryOut
         self.customPrompt = customPrompt
     }
 
     /// Check if Foundation Models / Apple Intelligence is available on this system.
-    static func checkAvailability() throws {
+    nonisolated static func checkAvailability() throws {
         let availability = SystemLanguageModel.default.availability
         switch availability {
         case .available:
@@ -39,7 +55,7 @@ struct Summarizer: Sendable {
     }
 
     /// Parse transcript entries from JSONL lines produced by SessionLog / StreamRenderer.
-    static func parseTranscriptLines(fromJSONLLines lines: [String]) -> [TranscriptLine] {
+    nonisolated static func parseTranscriptLines(fromJSONLLines lines: [String]) -> [TranscriptLine] {
         var results: [TranscriptLine] = []
 
         for rawLine in lines {
@@ -81,14 +97,14 @@ struct Summarizer: Sendable {
     }
 
     /// Read and parse transcript lines from a JSONL file on disk.
-    static func loadTranscriptLines(fromPath path: String) throws -> [TranscriptLine] {
+    nonisolated static func loadTranscriptLines(fromPath path: String) throws -> [TranscriptLine] {
         let content = try String(contentsOfFile: path, encoding: .utf8)
         let lines = content.components(separatedBy: .newlines)
         return parseTranscriptLines(fromJSONLLines: lines)
     }
 
     /// Format transcript lines into a readable dialog block.
-    static func formatTranscript(_ lines: [TranscriptLine]) -> String {
+    nonisolated static func formatTranscript(_ lines: [TranscriptLine]) -> String {
         return lines.map { line in
             let prefix: String
             if !line.timestamp.isEmpty && !line.channel.isEmpty {
@@ -104,96 +120,151 @@ struct Summarizer: Sendable {
         }.joined(separator: "\n")
     }
 
-    /// Generate an on-device meeting summary from the transcript lines.
-    func summarize(lines: [TranscriptLine]) async throws -> String {
-        guard !lines.isEmpty else {
-            return "No transcript content was captured to summarize."
+    // MARK: - Streaming / Real-time API
+
+    /// Feed a new transcript line as it is finalized by the renderer.
+    func append(_ line: TranscriptLine) {
+        pendingLines.append(line)
+        totalCapturedLines += 1
+        checkTriggerUpdate()
+    }
+
+    /// Total number of transcript lines received so far.
+    var utteranceCount: Int {
+        totalCapturedLines
+    }
+
+    /// Finish summarization at session exit, incorporating any remaining pending lines,
+    /// and return the final Markdown meeting summary.
+    func finalize() async throws -> String {
+        // Wait for any in-flight background update to complete
+        while isUpdating {
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         }
 
-        try Self.checkAvailability()
+        if !pendingLines.isEmpty {
+            let lines = pendingLines
+            pendingLines.removeAll()
+            let updated = try await performSummarize(lines: lines, existingSummary: currentSummary)
+            currentSummary = updated
+            writeSummaryToFileIfNeeded()
+        }
 
-        let formatted = Self.formatTranscript(lines)
+        return currentSummary
+    }
 
-        // For large transcripts (> 6000 characters or > 50 lines), use chunked hierarchical summarization
-        // to avoid exceeding the on-device model's context window size.
-        if formatted.count > 6000 || lines.count > 60 {
-            return try await summarizeHierarchically(lines: lines)
+    // MARK: - Background Update Logic
+
+    private func checkTriggerUpdate() {
+        guard !isUpdating else { return }
+        let elapsed = Date().timeIntervalSince(lastUpdateTime)
+        if pendingLines.count >= updateChunkThreshold || (pendingLines.count >= 10 && elapsed >= updateIntervalSeconds) {
+            triggerBackgroundUpdate()
+        }
+    }
+
+    private func triggerBackgroundUpdate() {
+        guard !isUpdating, !pendingLines.isEmpty else { return }
+        isUpdating = true
+        let linesToSummarize = pendingLines
+        pendingLines.removeAll()
+
+        Task {
+            await self.runBackgroundUpdate(lines: linesToSummarize)
+        }
+    }
+
+    private func runBackgroundUpdate(lines: [TranscriptLine]) async {
+        defer {
+            isUpdating = false
+            lastUpdateTime = Date()
+            // If more lines accumulated while updating, check if another update is needed
+            if pendingLines.count >= updateChunkThreshold {
+                triggerBackgroundUpdate()
+            }
         }
 
         do {
-            return try await summarizeDirect(transcript: formatted)
+            let updated = try await performSummarize(lines: lines, existingSummary: currentSummary)
+            currentSummary = updated
+            writeSummaryToFileIfNeeded()
+        } catch {
+            // Re-queue the un-summarized lines at the front so they aren't lost
+            pendingLines.insert(contentsOf: lines, at: 0)
+        }
+    }
+
+    private func writeSummaryToFileIfNeeded() {
+        guard let summaryOut, !currentSummary.isEmpty else { return }
+        let resolved = (summaryOut as NSString).expandingTildeInPath
+        try? currentSummary.write(toFile: resolved, atomically: true, encoding: .utf8)
+    }
+
+    // MARK: - LLM Inference
+
+    /// Generate an updated meeting summary given new transcript lines and an optional existing summary.
+    private func performSummarize(lines: [TranscriptLine], existingSummary: String) async throws -> String {
+        guard !lines.isEmpty else { return existingSummary }
+
+        try Self.checkAvailability()
+
+        let formattedLines = Self.formatTranscript(lines)
+        let promptText: String
+        if existingSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // First pass: generate initial structured minutes
+            promptText = SummaryPrompts.finalPrompt(
+                transcript: formattedLines,
+                isIntermediateSummary: false,
+                customPrompt: customPrompt
+            )
+        } else {
+            // Incremental pass: update existing minutes with new lines
+            promptText = SummaryPrompts.updatePrompt(
+                existingSummary: existingSummary,
+                newUtterances: formattedLines,
+                customPrompt: customPrompt
+            )
+        }
+
+        let session = LanguageModelSession()
+        do {
+            let response = try await session.respond(to: promptText)
+            return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch let genError as LanguageModelSession.GenerationError {
-            if case .exceededContextWindowSize = genError {
-                // Fall back to hierarchical summarization if direct summarization exceeded context
-                return try await summarizeHierarchically(lines: lines)
-            }
             throw VoError.summarizationFailed(reason: genError.localizedDescription)
         } catch {
             throw VoError.summarizationFailed(reason: error.localizedDescription)
         }
     }
 
-    // MARK: - Direct Summarization
+    // MARK: - Batch API (for backwards compatibility & tests)
 
-    private func summarizeDirect(transcript: String) async throws -> String {
-        let session = LanguageModelSession()
-        let promptText = SummaryPrompts.finalPrompt(transcript: transcript, customPrompt: customPrompt)
-        let response = try await session.respond(to: promptText)
-        return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    /// Generate a meeting summary from a batch of transcript lines (e.g. for offline evaluation).
+    func summarize(lines: [TranscriptLine]) async throws -> String {
+        currentSummary = ""
+        pendingLines = []
+        totalCapturedLines = 0
 
-    // MARK: - Hierarchical (Map-Reduce) Summarization
+        guard !lines.isEmpty else {
+            return "No transcript content was captured to summarize."
+        }
 
-    private func summarizeHierarchically(lines: [TranscriptLine]) async throws -> String {
         let chunkSize = 30
-        var chunks: [[TranscriptLine]] = []
         for i in stride(from: 0, to: lines.count, by: chunkSize) {
             let end = min(i + chunkSize, lines.count)
-            chunks.append(Array(lines[i..<end]))
+            let chunk = Array(lines[i..<end])
+            let updated = try await performSummarize(lines: chunk, existingSummary: currentSummary)
+            currentSummary = updated
         }
 
-        var partialSummaries: [String] = []
-
-        for (idx, chunk) in chunks.enumerated() {
-            let chunkText = Self.formatTranscript(chunk)
-            let session = LanguageModelSession()
-            let prompt = SummaryPrompts.chunkPrompt(
-                index: idx,
-                startTimestamp: chunk.first?.timestamp,
-                endTimestamp: chunk.last?.timestamp,
-                chunkText: chunkText
-            )
-            do {
-                let res = try await session.respond(to: prompt)
-                let text = res.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                partialSummaries.append("### Part \(idx + 1)\n\(text)")
-            } catch {
-                // If a sub-chunk fails, include its raw text truncated as fallback
-                let fallback = chunk.prefix(10).map { "\($0.channel): \($0.text)" }.joined(separator: "; ")
-                partialSummaries.append("### Part \(idx + 1)\n(Summarization failed: \(fallback)...)")
-            }
-        }
-
-        let combinedSummaries = partialSummaries.joined(separator: "\n\n")
-
-        // Final reduce pass
-        let reduceSession = LanguageModelSession()
-        let finalPrompt = SummaryPrompts.finalPrompt(
-            transcript: combinedSummaries,
-            isIntermediateSummary: true,
-            customPrompt: customPrompt
-        )
-        let finalResponse = try await reduceSession.respond(to: finalPrompt)
-        return finalResponse.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return currentSummary
     }
 
     // MARK: - Helper
 
-    private static func extractDisplayTime(from isoDateString: String) -> String {
-        // e.g. "2026-06-10T08:34:56.234+09:00" -> "08:34:56"
+    nonisolated private static func extractDisplayTime(from isoDateString: String) -> String {
         guard let tIndex = isoDateString.firstIndex(of: "T") else { return "" }
         let afterT = isoDateString[isoDateString.index(after: tIndex)...]
-        // Take first 8 chars (HH:mm:ss)
         let timePart = afterT.prefix(8)
         return String(timePart)
     }

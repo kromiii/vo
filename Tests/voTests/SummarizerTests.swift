@@ -112,5 +112,38 @@ struct SummarizerTests {
         #expect(prompt.contains("Transcript content"))
         #expect(!prompt.contains("Analyze the meeting transcript"))
     }
+
+    @Test func updatePromptIncludesExistingSummaryAndNewUtterances() {
+        let prompt = SummaryPrompts.updatePrompt(
+            existingSummary: "Existing Summary Content",
+            newUtterances: "New Utterance Line"
+        )
+        #expect(prompt.contains("Existing Summary Content"))
+        #expect(prompt.contains("New Utterance Line"))
+        #expect(prompt.contains("IMPORTANT INSTRUCTIONS:"))
+        #expect(prompt.contains("Synthesize the new discussion smoothly"))
+    }
+
+    @Test func updatePromptAppliesCustomPrompt() {
+        let prompt = SummaryPrompts.updatePrompt(
+            existingSummary: "Existing Summary Content",
+            newUtterances: "New Utterance Line",
+            customPrompt: "Custom Update Rule"
+        )
+        #expect(prompt.contains("Custom Update Rule"))
+        #expect(prompt.contains("Existing Summary Content"))
+        #expect(prompt.contains("New Utterance Line"))
+        #expect(!prompt.contains("IMPORTANT INSTRUCTIONS:"))
+    }
+
+    @Test func summarizerTracksUtteranceCountAndAppends() async {
+        let summarizer = Summarizer(summaryOut: nil, customPrompt: nil)
+        #expect(await summarizer.utteranceCount == 0)
+
+        await summarizer.append(Summarizer.TranscriptLine(timestamp: "10:00:00", channel: "mic", text: "Hello"))
+        await summarizer.append(Summarizer.TranscriptLine(timestamp: "10:00:05", channel: "speaker", text: "World"))
+
+        #expect(await summarizer.utteranceCount == 2)
+    }
 }
 

@@ -48,6 +48,7 @@ enum SummaryPrompts {
         return """
         Analyze \(sourceDescription) below and create structured meeting minutes in Markdown format.
         IMPORTANT: Write the entire response in the primary language used in the transcript (including section headings). For example, use Japanese if the transcript is in Japanese.
+        Do NOT split or format by parts/chunks; synthesize into a single unified meeting minutes document.
 
         Structure the minutes cleanly:
         - **Title / Header**
@@ -58,6 +59,51 @@ enum SummaryPrompts {
 
         ---
         \(transcript)
+        """
+    }
+
+    /// Build a prompt for incrementally updating an existing meeting summary with newly captured utterances.
+    static func updatePrompt(
+        existingSummary: String,
+        newUtterances: String,
+        customPrompt: String? = nil
+    ) -> String {
+        if let customPrompt {
+            return """
+            \(customPrompt)
+
+            ---
+            Current Meeting Minutes:
+            \(existingSummary)
+
+            ---
+            New Utterances:
+            \(newUtterances)
+            """
+        }
+
+        return """
+        You are an expert meeting secretary maintaining structured meeting minutes in Markdown.
+        Update the current meeting minutes below by incorporating the new utterances from the ongoing conversation.
+
+        IMPORTANT INSTRUCTIONS:
+        1. Synthesize the new discussion smoothly into the existing sections. Do NOT create chronological or "Part" sections (e.g. do NOT write "Part 1", "Part 2", etc.).
+        2. Keep the minutes well-structured:
+           - **Title / Header**: Maintain or adjust the meeting title if appropriate.
+           - **Summary**: 2-4 sentences describing the overall purpose and current progress.
+           - **Key Discussion Points**: Bullet points of main topics and conclusions.
+           - **Decisions**: Agreed conclusions or decisions (preserve previously agreed decisions unless explicitly superseded).
+           - **Action Items**: Checklist format `- [ ] [Owner] Task` (preserve previously assigned action items unless completed).
+        3. Write the entire output in the primary language used in the transcript (including section headings). For example, use Japanese if the transcript is in Japanese.
+        4. Return ONLY the complete updated Markdown document.
+
+        ---
+        Current Meeting Minutes:
+        \(existingSummary)
+
+        ---
+        New Utterances:
+        \(newUtterances)
         """
     }
 }

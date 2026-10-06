@@ -78,6 +78,8 @@ actor StreamRenderer: Renderer {
     private let showChannelLabel: Bool
     private let sourceColumnPad: String
     private let logSink: SessionLog?
+    private let summarizer: Summarizer?
+    private var appendTask: Task<Void, Never>?
 
     private var commitQueue: [Pair] = []
     private var volatileTexts: [AudioChannel: String] = [:]
@@ -100,7 +102,8 @@ actor StreamRenderer: Renderer {
         translationEnabled: Bool = true,
         showChannelLabel: Bool = true,
         out: FileHandle = .standardOutput,
-        logSink: SessionLog? = nil
+        logSink: SessionLog? = nil,
+        summarizer: Summarizer? = nil
     ) {
         self.mode = mode
         self.out = out
@@ -112,6 +115,7 @@ actor StreamRenderer: Renderer {
         // Without:    "HH:MM:SS" (8) + "   " (3)                        = 11.
         self.sourceColumnPad = String(repeating: " ", count: showChannelLabel ? 16 : 11)
         self.logSink = logSink
+        self.summarizer = summarizer
     }
 
     func handle(_ event: RenderEvent) async {
@@ -157,6 +161,7 @@ actor StreamRenderer: Renderer {
     }
 
     func flush() async {
+        _ = await appendTask?.result
         try? out.synchronize()
     }
 
@@ -179,6 +184,33 @@ actor StreamRenderer: Renderer {
         }
     }
 
+    private func feedSummarizer(channel: AudioChannel, timestamp: Date, source: String, target: String?) {
+        guard let summarizer else { return }
+        let combined: String
+        if let target, !target.isEmpty && target != source {
+            combined = "\(source) (\(target))"
+        } else {
+            combined = source
+        }
+        let timeStr = StreamRenderer.ttyTime.string(from: timestamp)
+        let channelName: String
+        switch channel {
+        case .mic:     channelName = "mic"
+        case .speaker: channelName = "speaker"
+        case .file:    channelName = "file"
+        }
+        let line = Summarizer.TranscriptLine(
+            timestamp: timeStr,
+            channel: channelName,
+            text: combined
+        )
+        // Maintain strict arrival order across asynchronous appends
+        appendTask = Task { [previous = appendTask] in
+            _ = await previous?.result
+            await summarizer.append(line)
+        }
+    }
+
     private func emitSourceOnly(channel: AudioChannel, seq: Int, source: String, timing: ChunkTiming, confidence: ChunkConfidence?, srcLangOverride: String?) {
         // Skip the JSONSerialization unless someone is going to consume it. In TTY
         // mode with no transcript sink (e.g. `vo < /dev/null` where stdout is a TTY
@@ -189,6 +221,7 @@ actor StreamRenderer: Renderer {
             : nil
 
         if let jsonl { logSink?.append(jsonl) }
+        feedSummarizer(channel: channel, timestamp: timing.timestamp, source: source, target: nil)
 
         switch mode {
         case .tty:
@@ -204,6 +237,7 @@ actor StreamRenderer: Renderer {
             : nil
 
         if let jsonl { logSink?.append(jsonl) }
+        feedSummarizer(channel: pair.channel, timestamp: pair.timing.timestamp, source: pair.source, target: target)
 
         switch mode {
         case .tty:
