@@ -145,5 +145,20 @@ struct SummarizerTests {
 
         #expect(await summarizer.utteranceCount == 2)
     }
+
+    @Test func chunkSummaryStoresMetadataCorrectly() {
+        let chunk = Summarizer.ChunkSummary(
+            index: 0,
+            startTime: "10:00:00",
+            endTime: "10:01:30",
+            utteranceCount: 25,
+            summaryText: "- Discussed feature launch\n- Assigned reviewer"
+        )
+        #expect(chunk.index == 0)
+        #expect(chunk.startTime == "10:00:00")
+        #expect(chunk.endTime == "10:01:30")
+        #expect(chunk.utteranceCount == 25)
+        #expect(chunk.summaryText.contains("feature launch"))
+    }
 }
 

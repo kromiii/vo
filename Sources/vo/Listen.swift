@@ -130,8 +130,8 @@ func runListen(
     )
 
     if let summarizer, isSummaryView {
-        await summarizer.setOnUpdate { [weak renderer] updatedSummary, isUpdating in
-            await renderer?.updateLiveSummary(updatedSummary, isUpdating: isUpdating)
+        await summarizer.setOnAppendChunk { [weak renderer] chunk in
+            await renderer?.appendSummaryChunk(chunk)
         }
     }
 
@@ -149,9 +149,7 @@ func runListen(
 
     let startedAt = Date()
     if isTTY {
-        if isSummaryView {
-            await renderer.renderInitialSummaryView()
-        } else if let inputURL {
+        if let inputURL {
             printFileBanner(
                 inputURL: inputURL,
                 sourceLocales: sourceLocales,
@@ -167,6 +165,9 @@ func runListen(
                 micDevice: deviceLabels.mic,
                 speakerDevice: deviceLabels.speaker
             )
+        }
+        if isSummaryView {
+            await renderer.renderInitialSummaryView()
         }
     }
 
@@ -276,7 +277,7 @@ private func finalizeSession(
             FileHandle.standardError.write(Data((status + "\n").utf8))
         }
     }
-    if isTTY && !isSummaryView {
+    if isTTY && summarizer == nil {
         printSummary(count: count, duration: duration)
     }
 
@@ -286,17 +287,16 @@ private func finalizeSession(
         if count == 0 && totalCount == 0 {
             if isTTY {
                 print("\u{001B}[38;5;244m(No utterances captured; skipping meeting summary)\u{001B}[0m")
+                printSummary(count: count, duration: duration)
             }
             return
         }
 
-        if !isSummaryView {
-            let notice = "Finalizing meeting summary with Apple Intelligence..."
-            if isTTY {
-                print("\n\u{001B}[38;5;244m\(notice)\u{001B}[0m")
-            } else {
-                FileHandle.standardError.write(Data((notice + "\n").utf8))
-            }
+        let notice = "Finalizing unified meeting minutes with Apple Intelligence..."
+        if isTTY {
+            print("\n\u{001B}[38;5;244m\(notice)\u{001B}[0m")
+        } else {
+            FileHandle.standardError.write(Data((notice + "\n").utf8))
         }
 
         do {
@@ -307,14 +307,11 @@ private func finalizeSession(
             }
 
             let summaryOut = summarizer.summaryOut
-            if isSummaryView {
-                // Render final clean summary screen
-                var finalScreen = "\u{001B}[H\u{001B}[J"
-                finalScreen += "\u{001B}[1;36mvo\u{001B}[0m \u{001B}[38;5;244m• Meeting Summary (Apple Intelligence)\u{001B}[0m\n"
-                finalScreen += "\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m\n\n"
-                finalScreen += summaryMarkdown + "\n\n"
-                finalScreen += "\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m\n"
-                FileHandle.standardOutput.write(Data(finalScreen.utf8))
+            if isTTY {
+                print("\n\u{001B}[1;36mvo\u{001B}[0m \u{001B}[1m• Final Meeting Minutes (Apple Intelligence)\u{001B}[0m")
+                print("\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m\n")
+                print(summaryMarkdown)
+                print("\n\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m")
                 printSummary(count: count, duration: duration)
                 if let summaryOut {
                     let resolved = (summaryOut as NSString).expandingTildeInPath
@@ -323,25 +320,15 @@ private func finalizeSession(
             } else if let summaryOut {
                 let resolved = (summaryOut as NSString).expandingTildeInPath
                 let msg = "Saved meeting summary: \(resolved)"
-                if isTTY {
-                    print(msg)
-                } else {
-                    FileHandle.standardError.write(Data((msg + "\n").utf8))
-                }
+                FileHandle.standardError.write(Data((msg + "\n").utf8))
             } else {
-                if isTTY {
-                    print("\n\u{001B}[1m--- Meeting Summary (Apple Intelligence) ---\u{001B}[0m\n")
-                    print(summaryMarkdown)
-                    print("\n\u{001B}[1m--------------------------------------------\u{001B}[0m")
-                } else {
-                    let summaryObj: [String: Any] = [
-                        "type": "summary",
-                        "content": summaryMarkdown
-                    ]
-                    if let data = try? JSONSerialization.data(withJSONObject: summaryObj),
-                       let jsonString = String(data: data, encoding: .utf8) {
-                        print(jsonString)
-                    }
+                let summaryObj: [String: Any] = [
+                    "type": "summary",
+                    "content": summaryMarkdown
+                ]
+                if let data = try? JSONSerialization.data(withJSONObject: summaryObj),
+                   let jsonString = String(data: data, encoding: .utf8) {
+                    print(jsonString)
                 }
             }
         } catch {

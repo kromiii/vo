@@ -9,19 +9,29 @@ actor Summarizer {
     let summaryOut: String?
     let customPrompt: String?
 
-    private(set) var currentSummary: String = ""
+    /// Representation of a summarized transcript chunk.
+    struct ChunkSummary: Sendable {
+        let index: Int
+        let startTime: String
+        let endTime: String
+        let utteranceCount: Int
+        let summaryText: String
+    }
+
+    private(set) var partialSummaries: [ChunkSummary] = []
+    private(set) var finalSummary: String = ""
     private var pendingLines: [TranscriptLine] = []
     private var isUpdating: Bool = false
     private var lastUpdateTime: Date = Date()
     private var totalCapturedLines: Int = 0
+    private var chunkIndex: Int = 0
 
-    /// Callback invoked when a summary update completes or background update state changes.
-    /// Parameters: (currentSummary: String, isGenerating: Bool)
-    typealias UpdateHandler = @Sendable (String, Bool) async -> Void
-    private var onUpdate: UpdateHandler?
+    /// Callback invoked when a new chunk summary is produced.
+    typealias ChunkHandler = @Sendable (ChunkSummary) async -> Void
+    private var onAppendChunk: ChunkHandler?
 
-    func setOnUpdate(_ handler: @escaping UpdateHandler) {
-        self.onUpdate = handler
+    func setOnAppendChunk(_ handler: @escaping ChunkHandler) {
+        self.onAppendChunk = handler
     }
 
     /// Threshold of pending lines before triggering an automatic background summary update.
@@ -136,12 +146,6 @@ actor Summarizer {
         pendingLines.append(line)
         totalCapturedLines += 1
         checkTriggerUpdate()
-        if currentSummary.isEmpty, let onUpdate {
-            let current = currentSummary
-            Task {
-                await onUpdate(current, false)
-            }
-        }
     }
 
     /// Total number of transcript lines received so far.
@@ -150,25 +154,78 @@ actor Summarizer {
     }
 
     /// Finish summarization at session exit, incorporating any remaining pending lines,
-    /// and return the final Markdown meeting summary.
+    /// synthesizing a unified meeting minutes document, and returning the final Markdown.
     func finalize() async throws -> String {
         // Wait for any in-flight background update to complete
         while isUpdating {
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         }
 
+        // Summarize any remaining pending lines into a final chunk
         if !pendingLines.isEmpty {
             let lines = pendingLines
             pendingLines.removeAll()
-            let updated = try await performSummarize(lines: lines, existingSummary: currentSummary)
-            currentSummary = updated
-            writeSummaryToFileIfNeeded()
-            if let onUpdate {
-                await onUpdate(currentSummary, false)
+            do {
+                let chunk = try await performChunkSummarize(lines: lines, index: chunkIndex)
+                chunkIndex += 1
+                partialSummaries.append(chunk)
+                writeInterimSummaryToFileIfNeeded()
+                if let onAppendChunk {
+                    await onAppendChunk(chunk)
+                }
+            } catch {
+                // If chunk summarization fails, keep lines for direct fallback below
+                pendingLines = lines
             }
         }
 
-        return currentSummary
+        // Now synthesize the final unified meeting minutes
+        try Self.checkAvailability()
+        let result: String
+
+        if partialSummaries.isEmpty {
+            if !pendingLines.isEmpty {
+                let formatted = Self.formatTranscript(pendingLines)
+                let prompt = SummaryPrompts.finalPrompt(
+                    transcript: formatted,
+                    isIntermediateSummary: false,
+                    customPrompt: customPrompt
+                )
+                let session = LanguageModelSession()
+                let response = try await session.respond(to: prompt)
+                result = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                result = "No transcript content was captured to summarize."
+            }
+        } else if partialSummaries.count == 1 && pendingLines.isEmpty {
+            let single = partialSummaries[0]
+            let prompt = SummaryPrompts.finalPrompt(
+                transcript: single.summaryText,
+                isIntermediateSummary: true,
+                customPrompt: customPrompt
+            )
+            let session = LanguageModelSession()
+            let response = try await session.respond(to: prompt)
+            result = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            let combinedParts = partialSummaries.map { part in
+                let timeRange = (!part.startTime.isEmpty && !part.endTime.isEmpty) ? " [\(part.startTime) - \(part.endTime)]" : ""
+                return "### Part \(part.index + 1)\(timeRange)\n\(part.summaryText)"
+            }.joined(separator: "\n\n")
+
+            let prompt = SummaryPrompts.finalPrompt(
+                transcript: combinedParts,
+                isIntermediateSummary: true,
+                customPrompt: customPrompt
+            )
+            let session = LanguageModelSession()
+            let response = try await session.respond(to: prompt)
+            result = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        self.finalSummary = result
+        writeFinalSummaryToFile(result)
+        return result
     }
 
     // MARK: - Background Update Logic
@@ -187,13 +244,6 @@ actor Summarizer {
         let linesToSummarize = pendingLines
         pendingLines.removeAll()
 
-        if let onUpdate {
-            let current = currentSummary
-            Task {
-                await onUpdate(current, true)
-            }
-        }
-
         Task {
             await self.runBackgroundUpdate(lines: linesToSummarize)
         }
@@ -210,57 +260,66 @@ actor Summarizer {
         }
 
         do {
-            let updated = try await performSummarize(lines: lines, existingSummary: currentSummary)
-            currentSummary = updated
-            writeSummaryToFileIfNeeded()
-            if let onUpdate {
-                await onUpdate(currentSummary, false)
+            let chunk = try await performChunkSummarize(lines: lines, index: chunkIndex)
+            chunkIndex += 1
+            partialSummaries.append(chunk)
+            writeInterimSummaryToFileIfNeeded()
+            if let onAppendChunk {
+                await onAppendChunk(chunk)
             }
         } catch {
             // Re-queue the un-summarized lines at the front so they aren't lost
             pendingLines.insert(contentsOf: lines, at: 0)
-            if let onUpdate {
-                await onUpdate(currentSummary, false)
-            }
         }
     }
 
-    private func writeSummaryToFileIfNeeded() {
-        guard let summaryOut, !currentSummary.isEmpty else { return }
+    private func writeInterimSummaryToFileIfNeeded() {
+        guard let summaryOut, !partialSummaries.isEmpty else { return }
         let resolved = (summaryOut as NSString).expandingTildeInPath
-        try? currentSummary.write(toFile: resolved, atomically: true, encoding: .utf8)
+        let content = partialSummaries.map { part in
+            let timeRange = (!part.startTime.isEmpty && !part.endTime.isEmpty) ? " [\(part.startTime) - \(part.endTime)]" : ""
+            return "## Part \(part.index + 1)\(timeRange)\n\n\(part.summaryText)"
+        }.joined(separator: "\n\n")
+        try? content.write(toFile: resolved, atomically: true, encoding: .utf8)
+    }
+
+    private func writeFinalSummaryToFile(_ content: String) {
+        guard let summaryOut, !content.isEmpty else { return }
+        let resolved = (summaryOut as NSString).expandingTildeInPath
+        try? content.write(toFile: resolved, atomically: true, encoding: .utf8)
     }
 
     // MARK: - LLM Inference
 
-    /// Generate an updated meeting summary given new transcript lines and an optional existing summary.
-    private func performSummarize(lines: [TranscriptLine], existingSummary: String) async throws -> String {
-        guard !lines.isEmpty else { return existingSummary }
+    /// Generate a concise summary chunk for a set of transcript lines.
+    private func performChunkSummarize(lines: [TranscriptLine], index: Int) async throws -> ChunkSummary {
+        guard !lines.isEmpty else {
+            return ChunkSummary(index: index, startTime: "", endTime: "", utteranceCount: 0, summaryText: "")
+        }
 
         try Self.checkAvailability()
 
+        let startTime = lines.first?.timestamp ?? ""
+        let endTime = lines.last?.timestamp ?? ""
         let formattedLines = Self.formatTranscript(lines)
-        let promptText: String
-        if existingSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // First pass: generate initial structured minutes
-            promptText = SummaryPrompts.finalPrompt(
-                transcript: formattedLines,
-                isIntermediateSummary: false,
-                customPrompt: customPrompt
-            )
-        } else {
-            // Incremental pass: update existing minutes with new lines
-            promptText = SummaryPrompts.updatePrompt(
-                existingSummary: existingSummary,
-                newUtterances: formattedLines,
-                customPrompt: customPrompt
-            )
-        }
+        let promptText = SummaryPrompts.chunkPrompt(
+            index: index,
+            startTimestamp: startTime,
+            endTimestamp: endTime,
+            chunkText: formattedLines
+        )
 
         let session = LanguageModelSession()
         do {
             let response = try await session.respond(to: promptText)
-            return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let summaryText = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return ChunkSummary(
+                index: index,
+                startTime: startTime,
+                endTime: endTime,
+                utteranceCount: lines.count,
+                summaryText: summaryText
+            )
         } catch let genError as LanguageModelSession.GenerationError {
             throw VoError.summarizationFailed(reason: genError.localizedDescription)
         } catch {
@@ -272,23 +331,17 @@ actor Summarizer {
 
     /// Generate a meeting summary from a batch of transcript lines (e.g. for offline evaluation).
     func summarize(lines: [TranscriptLine]) async throws -> String {
-        currentSummary = ""
-        pendingLines = []
-        totalCapturedLines = 0
+        partialSummaries = []
+        finalSummary = ""
+        pendingLines = lines
+        totalCapturedLines = lines.count
+        chunkIndex = 0
 
         guard !lines.isEmpty else {
             return "No transcript content was captured to summarize."
         }
 
-        let chunkSize = 30
-        for i in stride(from: 0, to: lines.count, by: chunkSize) {
-            let end = min(i + chunkSize, lines.count)
-            let chunk = Array(lines[i..<end])
-            let updated = try await performSummarize(lines: chunk, existingSummary: currentSummary)
-            currentSummary = updated
-        }
-
-        return currentSummary
+        return try await finalize()
     }
 
     // MARK: - Helper

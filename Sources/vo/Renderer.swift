@@ -82,10 +82,6 @@ actor StreamRenderer: Renderer {
     private let isSummaryView: Bool
     private var appendTask: Task<Void, Never>?
 
-    private var latestSummaryText: String = ""
-    private var isSummaryGenerating: Bool = false
-    private var lastSummaryUpdateTime: String? = nil
-
     private var commitQueue: [Pair] = []
     private var volatileTexts: [AudioChannel: String] = [:]
     private var liveRegionLines: Int = 0   // how many lines we currently own at the bottom
@@ -192,60 +188,25 @@ actor StreamRenderer: Renderer {
         }
     }
 
-    /// Update the displayed live summary from the background Summarizer actor.
-    func updateLiveSummary(_ summary: String, isUpdating: Bool) {
-        guard isSummaryView, mode == .tty else { return }
-        self.latestSummaryText = summary
-        self.isSummaryGenerating = isUpdating
-        if !isUpdating && !summary.isEmpty {
-            self.lastSummaryUpdateTime = StreamRenderer.ttyTime.string(from: Date())
-        }
-        renderSummaryScreen()
-    }
-
-    /// Render the initial live summary screen immediately upon startup.
+    /// Display initial notification when summary mode is active.
     func renderInitialSummaryView() {
         guard isSummaryView, mode == .tty else { return }
-        renderSummaryScreen()
+        writeLine("\u{001B}[38;5;244m(Real-time meeting summary enabled. Summary chunks will be appended as conversation progresses...)\u{001B}[0m\n")
     }
 
-    private func renderSummaryScreen() {
+    /// Append a newly generated summary chunk to the terminal.
+    func appendSummaryChunk(_ chunk: Summarizer.ChunkSummary) {
         guard isSummaryView, mode == .tty, !isShuttingDown else { return }
-        var buffer = ""
-        // Move cursor to top-left and clear to end of screen
-        buffer += "\u{001B}[H\u{001B}[J"
-
-        let statusDot: String
-        let statusText: String
-        if isSummaryGenerating {
-            statusDot = "\u{001B}[33m◌\u{001B}[0m"
-            statusText = "\u{001B}[33mUpdating summary...\u{001B}[0m"
+        var header = "\u{001B}[1;36m"
+        if !chunk.startTime.isEmpty && !chunk.endTime.isEmpty {
+            header += "[\(chunk.startTime) - \(chunk.endTime)]"
         } else {
-            statusDot = "\u{001B}[32m●\u{001B}[0m"
-            statusText = "\u{001B}[32mListening\u{001B}[0m"
+            header += "[Summary]"
         }
+        header += "\u{001B}[0m \u{001B}[38;5;244mPart \(chunk.index + 1) (\(chunk.utteranceCount) utterances)\u{001B}[0m"
 
-        let updatedPart: String
-        if let time = lastSummaryUpdateTime {
-            updatedPart = " | Updated at \(time)"
-        } else {
-            updatedPart = ""
-        }
-
-        buffer += "\u{001B}[1;36mvo\u{001B}[0m \u{001B}[38;5;244m• Live Meeting Summary\u{001B}[0m   \(statusDot) \(statusText) (\(finalizedCount) utterances\(updatedPart))\n"
-        buffer += "\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m\n\n"
-
-        if latestSummaryText.isEmpty {
-            buffer += "\u{001B}[38;5;244m(Listening to meeting... Initial summary will appear after capturing sufficient utterances)\u{001B}[0m\n"
-        } else {
-            buffer += latestSummaryText + "\n"
-        }
-
-        writeRaw(buffer)
-    }
-
-    private func writeRaw(_ s: String) {
-        out.write(Data(s.utf8))
+        writeLine(header)
+        writeLine(chunk.summaryText + "\n")
     }
 
     private func feedSummarizer(channel: AudioChannel, timestamp: Date, source: String, target: String?) {
@@ -288,9 +249,6 @@ actor StreamRenderer: Renderer {
         feedSummarizer(channel: channel, timestamp: timing.timestamp, source: source, target: nil)
 
         if isSummaryView {
-            if latestSummaryText.isEmpty {
-                renderSummaryScreen()
-            }
             return
         }
 
@@ -311,9 +269,6 @@ actor StreamRenderer: Renderer {
         feedSummarizer(channel: pair.channel, timestamp: pair.timing.timestamp, source: pair.source, target: target)
 
         if isSummaryView {
-            if latestSummaryText.isEmpty {
-                renderSummaryScreen()
-            }
             return
         }
 
