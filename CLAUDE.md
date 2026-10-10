@@ -47,7 +47,8 @@ Flat command (no subcommands). `--doctor` is the only "different mode"; everythi
 ```
 vo [--src LOCALE] [--dst LOCALE] [--no-mic] [--no-speaker]
    [--voice-processing] [--select-device] [--input PATH]
-   [--transcript PATH] [--doctor] [--json]
+   [--transcript PATH] [--summary [PATH]]
+   [--summary-prompt PROMPT] [--doctor] [--json]
 ```
 
 - `--src` defaults to `Locale.current.identifier(.bcp47)`. Must be in `SpeechTranscriber.supportedLocales` (all regional, no bare `en` / `ja`). Unsupported values produce a helpful error suggesting matching regional variants.
@@ -58,6 +59,8 @@ vo [--src LOCALE] [--dst LOCALE] [--no-mic] [--no-speaker]
 - TCC attribution: vo always re-execs itself as its own TCC responsible process (via the private `responsibility_spawnattrs_setdisclaim`) so the Microphone / Speech / Audio Recording grants attach to vo, not the launching terminal. There is no flag; it runs unconditionally in `Listen.swift` after the `mic || speaker` validation. The re-exec is gated on the embedded `Info.plist` being present (`Responsibility.hasEmbeddedInfoPlist`), so the release / `build.sh` binary claims its own identity while a plain `swift build` binary (no usage descriptions, would be killed on mic access) stays on the terminal's identity. The parent becomes a thin launcher that waits and forwards the child's exit status; any failure falls back to running in-process. Because the released binary is ad-hoc signed, macOS re-prompts after each release (the signing identifier stays `io.github.k1low.vo`, so it's one entry, not duplicates); a stable `VO_CODESIGN_IDENTITY` removes the re-prompt. See `Responsibility.swift`.
 - `--json` forces JSONL output. Without it, auto-detects: TTY → ANSI redraw, non-TTY → JSONL.
 - `--transcript PATH` streams finalized chunks as JSONL into `PATH`. Without it, vo streams the same JSONL into a temp file under `TMPDIR` and at Ctrl-C asks `Save transcript to ./vo-<stamp>.jsonl? [Y/n/<path>]`. If the chosen target (or `PATH` itself) exists, vo prompts `Overwrite? [y/N]`. Memory usage stays bounded across long sessions because nothing is buffered.
+- `--summary [PATH]` generates on-device meeting minutes using Apple Intelligence Foundation Models (`SystemLanguageModel`). Feeds finalized chunks incrementally into a rolling background summarizer (`Summarizer` actor), keeping memory and context window bounded across arbitrarily long sessions and updating the summary live. If `PATH` is specified, keeps the generated Markdown file updated live and writes final minutes at exit; otherwise prints to STDOUT in TTY mode. Fails fast if Foundation Models is not available.
+- `--summary-prompt PROMPT` customizes the instructions passed to the Foundation Model. Defaults to structured meeting minutes (Overview, Key Points, Decisions, Action Items).
 
 ## Architecture
 
@@ -108,6 +111,8 @@ The whole pipeline is one TaskGroup orchestrating two parallel channels (mic + s
 | `Responsibility.swift` | `Responsibility.reexecAsResponsibleProcess()`. Bridges the private `responsibility_spawnattrs_setdisclaim` and re-execs vo so TCC grants attach to vo rather than the terminal. Called unconditionally from `Listen.swift`, but gated on `hasEmbeddedInfoPlist()` (release builds only) and best-effort: returns and continues in-process on any failure. |
 | `NSExceptionBridge.swift` | `catchingNSException(_:)`. Wraps the `VoObjC` target's `@try` shim so a Cocoa API that reports failure by raising (`AVAudioNode.installTap` on a format mismatch) becomes a Swift error instead of an abort. The shim lives in `Sources/VoObjC` because Swift cannot catch an `NSException` at all. |
 | `SessionLog.swift` | Streaming JSONL transcript file. Two modes: explicit (`--transcript <path>` writes directly there) or temp (`TMPDIR` file moved/discarded on exit). Owns the overwrite-confirm and `Save transcript?` prompts. |
+| `Summarizer.swift` | On-device meeting minutes & summarization actor using Apple Intelligence `FoundationModels` (`SystemLanguageModel`). Supports real-time rolling / incremental summarization during live capture, bounded memory & context window. |
+| `SummaryPrompts.swift` | Prompt templates and builders for Foundation Models summarization (initial creation, incremental update, and structured final meeting minutes). |
 
 ### Key invariants in `StreamRenderer`
 

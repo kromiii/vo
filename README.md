@@ -16,6 +16,7 @@ https://github.com/user-attachments/assets/6c11b6bc-395f-4593-8eca-856c4e7fbc93
 - Wall-clock timestamps and audio time range per chunk
 - Transcription confidence per chunk (mean + min) in JSONL output
 - Optional voice processing (echo cancellation + noise reduction)
+- On-device meeting minutes & summarization via Apple Intelligence Foundation Models ([`SystemLanguageModel`](https://developer.apple.com/documentation/foundationmodels/systemlanguagemodel)) with `--summary`
 - Environment diagnostics via `--doctor`
 
 ## Install
@@ -51,6 +52,8 @@ $ vo --src en-US --dst ja-JP          # Transcribe and translate
 $ vo --no-speaker                     # Mic only
 $ vo --no-mic --src en-US --dst ja-JP # Speaker only, with translation
 $ vo --input meeting.m4a              # Transcribe an on-disk audio file instead
+$ vo --summary                        # Transcribe and generate on-device meeting minutes at exit
+$ vo --summary min.md                 # Save meeting minutes directly to Markdown
 $ vo --select-device                  # Pick & pin the mic / speaker at startup
 $ vo --json | jq                      # JSONL output for piping
 $ vo --doctor                         # Environment diagnostics

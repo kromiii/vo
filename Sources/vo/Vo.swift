@@ -45,12 +45,37 @@ struct Vo: AsyncParsableCommand {
     @Option(name: .long, help: "Stream finalized chunks as JSONL to this path (written incrementally so you can `tail -f` it; memory stays bounded for long sessions). Skips the interactive save prompt.")
     var transcript: String?
 
+    // MARK: - Summary (Apple Intelligence)
+
+    @Option(
+        name: .long,
+        defaultAsFlag: "",
+        help: "Generate an on-device AI meeting summary / minutes at exit using Apple Intelligence Foundation Models. Optionally specify a file path to save the summary (Markdown)."
+    )
+    var summary: String?
+
+    @Option(name: .long, help: ArgumentHelp("Save the generated summary to this file (Markdown). (Deprecated: use --summary <path> instead)", visibility: .hidden))
+    var summaryOut: String?
+
+    @Option(name: .long, help: "Custom prompt or instructions for the AI summary (defaults to structured meeting minutes).")
+    var summaryPrompt: String?
+
     // MARK: - Run
 
     func run() async throws {
         if doctor {
             try await runDoctor(json: json)
             return
+        }
+
+        let summaryEnabled = summary != nil || summaryOut != nil || summaryPrompt != nil
+        let resolvedSummaryOut: String?
+        if let summary, !summary.isEmpty {
+            resolvedSummaryOut = summary
+        } else if let summaryOut, !summaryOut.isEmpty {
+            resolvedSummaryOut = summaryOut
+        } else {
+            resolvedSummaryOut = nil
         }
 
         try await runListen(
@@ -62,7 +87,10 @@ struct Vo: AsyncParsableCommand {
             voiceProcessing: voiceProcessing,
             selectDevice: selectDevice,
             input: input,
-            transcript: transcript
+            transcript: transcript,
+            summary: summaryEnabled,
+            summaryOut: resolvedSummaryOut,
+            summaryPrompt: summaryPrompt
         )
     }
 }
