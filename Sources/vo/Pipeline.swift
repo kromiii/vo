@@ -22,22 +22,45 @@ struct AsyncStopper: @unchecked Sendable {
     let action: () async -> Void
 }
 
-/// Sendable shim over `TranslationSession` (non-Sendable class) so a single
-/// session can be shared across concurrent translate calls fanned out via
-/// TaskGroup. Apple does not document `TranslationSession.translate(_:)` as
-/// concurrent-safe explicitly, but `translations(batch:)` exists, which implies
-/// the underlying engine accepts overlapping requests. We bound the concurrency
-/// at the call site to limit blast radius if that assumption ever breaks.
-struct SendableTranslationSession: @unchecked Sendable {
-    let inner: TranslationSession
-}
+/// `TranslationBackend` over a `TranslationSession`. `@unchecked Sendable` because the
+/// session is a non-Sendable class; `TranslationWorker` keeps at most one call in
+/// flight per session, and an abandoned (stalled) session is never called again.
+struct SessionTranslationBackend: TranslationBackend, @unchecked Sendable {
+    let session: TranslationSession
 
-/// Per-channel translation fan-out width. File mode finalizes transcribe chunks
-/// far faster than a single serial `translate(_:)` can drain, so chunks queue
-/// up behind StreamRenderer.commitQueue's head and nothing emits until SIGINT.
-/// Fanning out lets independent chunks translate in parallel; the renderer's
-/// seq-ordered commit still preserves output order.
-private let translateConcurrency = 4
+    init(source: Locale.Language, target: Locale.Language) {
+        session = TranslationSession(installedSource: source, target: target)
+    }
+
+    func prepare() async throws {
+        try await session.prepareTranslation()
+    }
+
+    func translate(_ batch: [TranslationItem]) -> AsyncThrowingStream<TranslationItem, Error> {
+        AsyncThrowingStream { cont in
+            let task = Task {
+                do {
+                    // A lone chunk, the common live case, keeps using the single-string
+                    // call, so batching only changes behaviour while catching up.
+                    if batch.count == 1 {
+                        let response = try await session.translate(batch[0].text)
+                        cont.yield(TranslationItem(seq: batch[0].seq, text: response.targetText))
+                    } else {
+                        let requests = batch.map { TranslationSession.Request(sourceText: $0.text, clientIdentifier: String($0.seq)) }
+                        for try await response in session.translate(batch: requests) {
+                            guard let id = response.clientIdentifier, let seq = Int(id) else { continue }
+                            cont.yield(TranslationItem(seq: seq, text: response.targetText))
+                        }
+                    }
+                    cont.finish()
+                } catch {
+                    cont.finish(throwing: error)
+                }
+            }
+            cont.onTermination = { _ in task.cancel() }
+        }
+    }
+}
 
 /// Holds per-channel "stop the audio source" closures so the SIGINT handler can
 /// stop capture before blocking on the save prompt. Without this the OS keeps
@@ -892,7 +915,7 @@ struct Pipeline {
                 dstLangOverride: dstLang
             ))
             if willTranslate, let lane = lanes[srcLang] {
-                lane.builder.yield((seq, winner.text))
+                lane.builder.yield(TranslationItem(seq: seq, text: winner.text))
             }
             await volatileGate.setStickyWinner(srcLang)
         }
@@ -944,7 +967,7 @@ struct Pipeline {
     /// immutable and captures cleanly into the reconciler's Sendable closure.
     private struct TranslationLane: Sendable {
         let translator: Task<Void, Never>
-        let builder: AsyncStream<(Int, String)>.Continuation
+        let builder: AsyncStream<TranslationItem>.Continuation
     }
 
     private func makeTranslationLanes() -> [String: TranslationLane] {
@@ -952,7 +975,7 @@ struct Pipeline {
         var m: [String: TranslationLane] = [:]
         for (i, src) in sourceLocales.enumerated() {
             let dst = targetLocales[i]
-            let (chunkSeq, builder) = AsyncStream<(Int, String)>.makeStream()
+            let (chunkSeq, builder) = AsyncStream<TranslationItem>.makeStream()
             let translator = makeTranslator(source: src, target: dst, chunkSeq: chunkSeq)
             m[src.identifier(.bcp47)] = TranslationLane(translator: translator, builder: builder)
         }
@@ -1035,54 +1058,25 @@ struct Pipeline {
     /// TranslationSession entirely and echoes source text as target. The Translation
     /// framework rejects identity pairs as unsupported, so we must not call it.
     ///
-    /// TranslationSession is non-Sendable so we create it inside the Task closure.
-    private func makeTranslator(source: Locale, target: Locale, chunkSeq: AsyncStream<(Int, String)>) -> Task<Void, Never> {
+    /// TranslationSession is non-Sendable so each one is created inside the worker,
+    /// through `makeBackend`, rather than hoisted here.
+    private func makeTranslator(source: Locale, target: Locale, chunkSeq: AsyncStream<TranslationItem>) -> Task<Void, Never> {
         let renderer = renderer
         if isSameLanguage(source, target) {
             return Task {
-                for await (seq, text) in chunkSeq {
-                    await renderer.handle(.translated(seq: seq, target: text))
+                for await item in chunkSeq {
+                    await renderer.handle(.translated(seq: item.seq, target: item.text))
                 }
             }
         }
         let sourceLang = source.language
         let targetLang = target.language
-        return Task {
-            let box = SendableTranslationSession(inner: TranslationSession(installedSource: sourceLang, target: targetLang))
-            // run() already verified the pair via ensureTranslationModel (it throws
-            // otherwise), so warm the model now to keep the first chunk's translation
-            // off the lazy on-demand loading path. A warm-up failure is non-fatal (the
-            // per-chunk translate path still surfaces real errors), but a cancellation
-            // means shutdown started, so bail instead of entering the chunk loop.
-            do {
-                try await box.inner.prepareTranslation()
-            } catch is CancellationError {
-                return
-            } catch {}
-            // Fan out per-chunk translate calls so a slow translate doesn't block
-            // later chunks. Bounded by translateConcurrency: when the in-flight
-            // count hits the cap, we await one child via group.next() before adding
-            // the next. StreamRenderer.commitQueue is seq-ordered, so out-of-order
-            // .translated events still render in order.
-            await withTaskGroup(of: Void.self) { group in
-                var inFlight = 0
-                for await (seq, text) in chunkSeq {
-                    if inFlight >= translateConcurrency {
-                        await group.next()
-                        inFlight -= 1
-                    }
-                    group.addTask {
-                        do {
-                            let response = try await box.inner.translate(text)
-                            await renderer.handle(.translated(seq: seq, target: response.targetText))
-                        } catch {
-                            await renderer.handle(.translated(seq: seq, target: "[translation failed: \(error.localizedDescription)]"))
-                        }
-                    }
-                    inFlight += 1
-                }
-            }
-        }
+        let worker = TranslationWorker(
+            makeBackend: { SessionTranslationBackend(source: sourceLang, target: targetLang) },
+            onResult: { await renderer.handle(.translated(seq: $0.seq, target: $0.text)) },
+            onNotice: { emitProgress($0) }
+        )
+        return Task { await worker.run(chunks: chunkSeq) }
     }
 
     /// Drain one transcriber's result stream. Volatile previews go through the
@@ -1166,8 +1160,10 @@ struct Pipeline {
     ///   - end-to-end backpressure via pull-based `FileSource.nextBuffer()` plus a
     ///     `BoundedAnalyzerInputBuffer`. A push stream would let memory grow with file
     ///     duration when the disk feeds audio faster than the analyzer drains it.
-    ///   - the analyzer's input naturally finishes when the file hits EOF, which closes
-    ///     transcriber.results and lets this function return without external cancel.
+    ///   - the analyzer's input finishes when the file hits EOF, and the analysis
+    ///     session is then finished explicitly with `finalizeAndFinishThroughEndOfInput()`,
+    ///     which closes transcriber.results and lets this function return without
+    ///     external cancel. Closing the input alone leaves the session open.
     ///     A mid-stream read failure surfaces as a thrown VoError.inputFileReadFailed
     ///     via `try await resampler.value` at the end, instead of the silent truncation
     ///     a `break`-on-error feeder would produce.
@@ -1215,13 +1211,14 @@ struct Pipeline {
         await stops.register(AsyncStopper(action: stopper))
 
         let inputBuffers = perLocale.map { $0.inputBuffer }
+        let analyzers = perLocale.map { $0.analyzer }
 
         // Resampler: pull one buffer at a time from the file, bridge gaps with silence
         // exactly like runChannel does for live capture, and send into every bounded
         // input. `send` suspends when any buffer is full, so file reads are paced by
         // the slowest analyzer's drain rate end-to-end. A read failure rethrows as
         // VoError.inputFileReadFailed; the success path closes the buffer cleanly so
-        // the analyzers' results streams drain and exit.
+        // the analyzers have consumed everything before the session is finished below.
         let resampler: Task<Void, Error> = Task.detached { [inputURL] in
             var fedEndHostTime: Double? = nil
             while !Task.isCancelled {
@@ -1315,7 +1312,7 @@ struct Pipeline {
                 dstLangOverride: dstLang
             ))
             if willTranslate, let lane = lanes[srcLang] {
-                lane.builder.yield((seq, winner.text))
+                lane.builder.yield(TranslationItem(seq: seq, text: winner.text))
             }
             await volatileGate.setStickyWinner(srcLang)
         }
@@ -1335,6 +1332,30 @@ struct Pipeline {
                             // not Unix epoch 00:00Z.
                             timestampFor: { audioStart in localEpoch.addingTimeInterval(audioStart ?? 0) }
                         )
+                    }
+                }
+                // The end of the input sequence does not end an analysis session, so
+                // without this the results streams above never close and the process
+                // never exits. Waiting on the resampler first means every buffer has
+                // been sent, so "through end of input" covers the whole file, and it
+                // also finalizes the trailing utterance that would otherwise stay
+                // volatile. A read failure ends the resampler too; finishing the
+                // session lets the drains return so the failure is rethrown below.
+                group.addTask { [analyzers, inputBuffers] in
+                    // When a drain throws, the group cancels this child and then waits
+                    // for it, so the catch below cannot run until it returns. Awaiting
+                    // an unstructured task's value is not cancelled with us, and a
+                    // resampler parked in a full buffer's `send` only wakes on
+                    // finish(), so unblock it here or the group waits forever.
+                    await withTaskCancellationHandler {
+                        _ = try? await resampler.value
+                    } onCancel: {
+                        resampler.cancel()
+                        Task { for buf in inputBuffers { await buf.finish() } }
+                    }
+                    try Task.checkCancellation()
+                    for analyzer in analyzers {
+                        try await analyzer.finalizeAndFinishThroughEndOfInput()
                     }
                 }
                 try await group.waitForAll()
@@ -1362,8 +1383,8 @@ struct Pipeline {
         await reconciler.finish()
         for lane in lanes.values { lane.builder.finish() }
         for lane in lanes.values { await lane.translator.value }
-        // The analyzer's results finished because the resampler closed the input
-        // buffers. If the close was preceded by a read failure, that failure is still
+        // The analyzer's results finished because the session was finished once the
+        // resampler was done. If it stopped on a read failure, that failure is still
         // pending on the resampler's value; rethrow it here so a corrupt / truncated
         // file does not surface as a clean exit.
         try await resampler.value
