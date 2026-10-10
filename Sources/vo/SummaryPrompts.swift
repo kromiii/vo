@@ -7,7 +7,8 @@ enum SummaryPrompts {
         index: Int,
         startTimestamp: String?,
         endTimestamp: String?,
-        chunkText: String
+        chunkText: String,
+        targetLanguage: String? = nil
     ) -> String {
         let timeRange: String
         if let start = startTimestamp, !start.isEmpty, let end = endTimestamp, !end.isEmpty {
@@ -16,10 +17,17 @@ enum SummaryPrompts {
             timeRange = ""
         }
 
+        let languageInstruction: String
+        if let targetLanguage, !targetLanguage.isEmpty {
+            languageInstruction = "IMPORTANT: Write the entire summary in \(targetLanguage)."
+        } else {
+            languageInstruction = "IMPORTANT: Write the entire summary in the primary language used in the transcript."
+        }
+
         return """
         The following is part \(index + 1)\(timeRange) of a meeting transcript.
         Summarize the key discussion points, decisions, and speaker remarks in 3-5 concise bullet points.
-        IMPORTANT: Respond in the primary language used in the transcript.
+        \(languageInstruction)
 
         ---
         \(chunkText)
@@ -30,7 +38,8 @@ enum SummaryPrompts {
     static func finalPrompt(
         transcript: String,
         isIntermediateSummary: Bool = false,
-        customPrompt: String? = nil
+        customPrompt: String? = nil,
+        targetLanguage: String? = nil
     ) -> String {
         if let customPrompt {
             return """
@@ -45,9 +54,16 @@ enum SummaryPrompts {
             ? "the intermediate summaries of each part of the meeting"
             : "the meeting transcript"
 
+        let languageInstruction: String
+        if let targetLanguage, !targetLanguage.isEmpty {
+            languageInstruction = "IMPORTANT: Write the entire response in \(targetLanguage) (including all section headings, summary, decisions, and action items). Do NOT use any other language."
+        } else {
+            languageInstruction = "IMPORTANT: Write the entire response in the primary language used in the transcript (including section headings). Do NOT translate into another language unless explicitly requested."
+        }
+
         return """
         Analyze \(sourceDescription) below and create structured meeting minutes in Markdown format.
-        IMPORTANT: Write the entire response in the primary language used in the transcript (including section headings). For example, use Japanese if the transcript is in Japanese.
+        \(languageInstruction)
         Do NOT split or format by parts/chunks; synthesize into a single unified meeting minutes document.
 
         Structure the minutes cleanly:
@@ -66,7 +82,8 @@ enum SummaryPrompts {
     static func updatePrompt(
         existingSummary: String,
         newUtterances: String,
-        customPrompt: String? = nil
+        customPrompt: String? = nil,
+        targetLanguage: String? = nil
     ) -> String {
         if let customPrompt {
             return """
@@ -82,6 +99,13 @@ enum SummaryPrompts {
             """
         }
 
+        let languageInstruction: String
+        if let targetLanguage, !targetLanguage.isEmpty {
+            languageInstruction = "Write the entire output in \(targetLanguage) (including all section headings)."
+        } else {
+            languageInstruction = "Write the entire output in the primary language used in the transcript (including section headings)."
+        }
+
         return """
         You are an expert meeting secretary maintaining structured meeting minutes in Markdown.
         Update the current meeting minutes below by incorporating the new utterances from the ongoing conversation.
@@ -94,7 +118,7 @@ enum SummaryPrompts {
            - **Key Discussion Points**: Bullet points of main topics and conclusions.
            - **Decisions**: Agreed conclusions or decisions (preserve previously agreed decisions unless explicitly superseded).
            - **Action Items**: Checklist format `- [ ] [Owner] Task` (preserve previously assigned action items unless completed).
-        3. Write the entire output in the primary language used in the transcript (including section headings). For example, use Japanese if the transcript is in Japanese.
+        3. \(languageInstruction)
         4. Return ONLY the complete updated Markdown document.
 
         ---

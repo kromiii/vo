@@ -8,6 +8,7 @@ import FoundationModels
 actor Summarizer {
     let summaryOut: String?
     let customPrompt: String?
+    let targetLanguage: String?
 
     /// Representation of a summarized transcript chunk.
     struct ChunkSummary: Sendable {
@@ -39,9 +40,20 @@ actor Summarizer {
     /// Minimum time between background summary updates if there are at least some pending lines.
     private let updateIntervalSeconds: TimeInterval = 60.0
 
-    init(summaryOut: String? = nil, customPrompt: String? = nil) {
+    init(summaryOut: String? = nil, customPrompt: String? = nil, targetLanguage: String? = nil) {
         self.summaryOut = summaryOut
         self.customPrompt = customPrompt
+        self.targetLanguage = targetLanguage
+    }
+
+    /// Extract an English display name for a given locale (e.g. "Japanese" for "ja-JP", "English" for "en-US").
+    nonisolated static func languageDisplayName(for locale: Locale) -> String {
+        let enLocale = Locale(identifier: "en_US")
+        let langCode = locale.language.languageCode?.identifier ?? locale.identifier
+        if let name = enLocale.localizedString(forLanguageCode: langCode), !name.isEmpty {
+            return name
+        }
+        return langCode
     }
 
     /// Check if Foundation Models / Apple Intelligence is available on this system.
@@ -189,7 +201,8 @@ actor Summarizer {
                 let prompt = SummaryPrompts.finalPrompt(
                     transcript: formatted,
                     isIntermediateSummary: false,
-                    customPrompt: customPrompt
+                    customPrompt: customPrompt,
+                    targetLanguage: targetLanguage
                 )
                 let session = LanguageModelSession()
                 let response = try await session.respond(to: prompt)
@@ -202,7 +215,8 @@ actor Summarizer {
             let prompt = SummaryPrompts.finalPrompt(
                 transcript: single.summaryText,
                 isIntermediateSummary: true,
-                customPrompt: customPrompt
+                customPrompt: customPrompt,
+                targetLanguage: targetLanguage
             )
             let session = LanguageModelSession()
             let response = try await session.respond(to: prompt)
@@ -216,7 +230,8 @@ actor Summarizer {
             let prompt = SummaryPrompts.finalPrompt(
                 transcript: combinedParts,
                 isIntermediateSummary: true,
-                customPrompt: customPrompt
+                customPrompt: customPrompt,
+                targetLanguage: targetLanguage
             )
             let session = LanguageModelSession()
             let response = try await session.respond(to: prompt)
@@ -306,7 +321,8 @@ actor Summarizer {
             index: index,
             startTimestamp: startTime,
             endTimestamp: endTime,
-            chunkText: formattedLines
+            chunkText: formattedLines,
+            targetLanguage: targetLanguage
         )
 
         let session = LanguageModelSession()

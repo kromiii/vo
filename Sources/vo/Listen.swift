@@ -116,7 +116,13 @@ func runListen(
     let showChannelLabel = inputURL == nil && mic && speaker
 
     let isSummaryView = isTTY && summary
-    let summarizer: Summarizer? = summary ? Summarizer(summaryOut: summaryOut, customPrompt: summaryPrompt) : nil
+    let summaryLocale = primaryTarget ?? primarySource
+    let targetLanguageName = Summarizer.languageDisplayName(for: summaryLocale)
+    let summarizer: Summarizer? = summary ? Summarizer(
+        summaryOut: summaryOut,
+        customPrompt: summaryPrompt,
+        targetLanguage: targetLanguageName
+    ) : nil
 
     let renderer = StreamRenderer(
         mode: mode,

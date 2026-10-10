@@ -76,8 +76,19 @@ struct SummarizerTests {
             chunkText: "[mic] Discussion topic"
         )
         #expect(prompt.contains("The following is part 1 (utterances 10:00:00 to 10:05:00)"))
-        #expect(prompt.contains("IMPORTANT: Respond in the primary language used in the transcript."))
+        #expect(prompt.contains("IMPORTANT: Write the entire summary in the primary language used in the transcript."))
         #expect(prompt.contains("[mic] Discussion topic"))
+    }
+
+    @Test func chunkPromptAppliesExplicitTargetLanguage() {
+        let prompt = SummaryPrompts.chunkPrompt(
+            index: 0,
+            startTimestamp: "10:00:00",
+            endTimestamp: "10:05:00",
+            chunkText: "[mic] Discussion topic",
+            targetLanguage: "Japanese"
+        )
+        #expect(prompt.contains("IMPORTANT: Write the entire summary in Japanese."))
     }
 
     @Test func chunkPromptHandlesEmptyTimestamps() {
@@ -91,11 +102,21 @@ struct SummarizerTests {
         #expect(!prompt.contains("utterances"))
     }
 
-    @Test func finalPromptInstructsSameLanguage() {
+    @Test func finalPromptInstructsSameLanguageByDefault() {
         let prompt = SummaryPrompts.finalPrompt(transcript: "Transcript content")
         #expect(prompt.contains("Analyze the meeting transcript below"))
         #expect(prompt.contains("IMPORTANT: Write the entire response in the primary language used in the transcript"))
+        #expect(!prompt.contains("For example, use Japanese"))
         #expect(prompt.contains("Transcript content"))
+    }
+
+    @Test func finalPromptAppliesExplicitTargetLanguage() {
+        let prompt = SummaryPrompts.finalPrompt(
+            transcript: "Transcript content",
+            targetLanguage: "Japanese"
+        )
+        #expect(prompt.contains("IMPORTANT: Write the entire response in Japanese (including all section headings"))
+        #expect(!prompt.contains("primary language used in the transcript"))
     }
 
     @Test func finalPromptHandlesIntermediateSummary() {
@@ -159,6 +180,12 @@ struct SummarizerTests {
         #expect(chunk.endTime == "10:01:30")
         #expect(chunk.utteranceCount == 25)
         #expect(chunk.summaryText.contains("feature launch"))
+    }
+
+    @Test func languageDisplayNameExtractsEnglishNames() {
+        #expect(Summarizer.languageDisplayName(for: Locale(identifier: "ja-JP")) == "Japanese")
+        #expect(Summarizer.languageDisplayName(for: Locale(identifier: "en-US")) == "English")
+        #expect(Summarizer.languageDisplayName(for: Locale(identifier: "fr-FR")) == "French")
     }
 }
 
