@@ -62,16 +62,20 @@ enum SummaryPrompts {
         }
 
         return """
-        Analyze \(sourceDescription) below and create structured meeting minutes in Markdown format.
+        Analyze \(sourceDescription) below and synthesize a concise, structured meeting summary in Markdown format.
         \(languageInstruction)
-        Do NOT split or format by parts/chunks; synthesize into a single unified meeting minutes document.
+        Do NOT split or format by chronological parts/chunks; synthesize the entire meeting into a single unified summary.
+
+        CONCISENESS & LENGTH REQUIREMENTS:
+        - Keep the entire summary concise, readable in 2-3 minutes (target length: approx. 800 - 1,200 characters in Japanese, or 300 - 500 words in English).
+        - Do NOT produce an overly long or exhaustive transcript recap. Strictly omit minor conversational details and focus exclusively on high-level outcomes and agreements.
 
         Structure the minutes cleanly:
-        - **Title / Header**
-        - **Summary**: 2-4 sentences describing the main purpose and overall outcome.
-        - **Key Discussion Points**: Bullet points of main topics and conclusions.
-        - **Decisions**: Agreed conclusions or decisions (or indicate none).
-        - **Action Items**: Checklist format `- [ ] [Owner] Task` (or indicate none).
+        - **Title / Header**: Meeting Title / Topic
+        - **Summary**: 2-4 concise sentences summarizing the primary purpose, core outcome, and current status.
+        - **Key Discussion Points**: Strictly 3-5 bullet points covering only the most important topics and agreed conclusions (each bullet should be 1-2 sentences). Do NOT exceed 5 bullets.
+        - **Decisions**: 2-4 bullet points of concrete agreements or decisions made (or write "None" / "特になし" if none).
+        - **Action Items**: 2-5 bullet points in checklist format `- [ ] [Owner] Task` focusing on concrete next steps (or write "None" / "特になし" if none).
 
         ---
         \(transcript)
@@ -115,7 +119,7 @@ enum SummaryPrompts {
         2. Keep the minutes well-structured:
            - **Title / Header**: Maintain or adjust the meeting title if appropriate.
            - **Summary**: 2-4 sentences describing the overall purpose and current progress.
-           - **Key Discussion Points**: Bullet points of main topics and conclusions.
+           - **Key Discussion Points**: Strictly 3-5 bullet points covering the main topics and conclusions (each bullet should be 1-2 sentences). Do NOT exceed 5 bullets.
            - **Decisions**: Agreed conclusions or decisions (preserve previously agreed decisions unless explicitly superseded).
            - **Action Items**: Checklist format `- [ ] [Owner] Task` (preserve previously assigned action items unless completed).
         3. \(languageInstruction)

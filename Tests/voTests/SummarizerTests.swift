@@ -134,6 +134,13 @@ struct SummarizerTests {
         #expect(!prompt.contains("Analyze the meeting transcript"))
     }
 
+    @Test func finalPromptIncludesConcisenessAndItemCapRequirements() {
+        let prompt = SummaryPrompts.finalPrompt(transcript: "Transcript content")
+        #expect(prompt.contains("CONCISENESS & LENGTH REQUIREMENTS:"))
+        #expect(prompt.contains("Strictly 3-5 bullet points"))
+        #expect(prompt.contains("800 - 1,200 characters"))
+    }
+
     @Test func updatePromptIncludesExistingSummaryAndNewUtterances() {
         let prompt = SummaryPrompts.updatePrompt(
             existingSummary: "Existing Summary Content",
