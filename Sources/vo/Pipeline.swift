@@ -1676,7 +1676,7 @@ enum VoError: Error, CustomStringConvertible {
             """
 
         case .summarizationFailed(let reason):
-            return "Failed to generate meeting summary: \(reason)"
+            return "Failed to generate summary: \(reason)"
 
         case .audioDeviceNotReady(let channel, let format):
             return """

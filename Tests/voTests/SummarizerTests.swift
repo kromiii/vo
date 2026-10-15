@@ -98,13 +98,22 @@ struct SummarizerTests {
             endTimestamp: nil,
             chunkText: "Sample text"
         )
-        #expect(prompt.contains("The following is part 2 of a meeting transcript."))
+        #expect(prompt.contains("The following is part 2 of a transcript."))
         #expect(!prompt.contains("utterances"))
+
+        let meetingPrompt = SummaryPrompts.chunkPrompt(
+            index: 1,
+            startTimestamp: nil,
+            endTimestamp: nil,
+            chunkText: "Sample text",
+            preset: .meeting
+        )
+        #expect(meetingPrompt.contains("The following is part 2 of a meeting transcript."))
     }
 
     @Test func finalPromptInstructsSameLanguageByDefault() {
         let prompt = SummaryPrompts.finalPrompt(transcript: "Transcript content")
-        #expect(prompt.contains("Analyze the meeting transcript below"))
+        #expect(prompt.contains("Analyze the transcript below"))
         #expect(prompt.contains("IMPORTANT: Write the entire response in the primary language used in the transcript"))
         #expect(!prompt.contains("For example, use Japanese"))
         #expect(prompt.contains("Transcript content"))
@@ -121,7 +130,10 @@ struct SummarizerTests {
 
     @Test func finalPromptHandlesIntermediateSummary() {
         let prompt = SummaryPrompts.finalPrompt(transcript: "Part summaries", isIntermediateSummary: true)
-        #expect(prompt.contains("Analyze the intermediate summaries of each part of the meeting below"))
+        #expect(prompt.contains("Analyze the intermediate summaries of each part below"))
+
+        let meetingPrompt = SummaryPrompts.finalPrompt(transcript: "Part summaries", isIntermediateSummary: true, preset: .meeting)
+        #expect(meetingPrompt.contains("Analyze the intermediate summaries of each part of the meeting below"))
     }
 
     @Test func finalPromptAppliesCustomPrompt() {
@@ -131,7 +143,7 @@ struct SummarizerTests {
         )
         #expect(prompt.contains("Custom summarization rule"))
         #expect(prompt.contains("Transcript content"))
-        #expect(!prompt.contains("Analyze the meeting transcript"))
+        #expect(!prompt.contains("Analyze the transcript"))
     }
 
     @Test func finalPromptIncludesConcisenessAndItemCapRequirements() {
@@ -139,6 +151,20 @@ struct SummarizerTests {
         #expect(prompt.contains("CONCISENESS & LENGTH REQUIREMENTS:"))
         #expect(prompt.contains("Strictly 3-5 bullet points"))
         #expect(prompt.contains("800 - 1,200 characters"))
+    }
+
+    @Test func finalPromptSupportsGeneralAndMeetingPresets() {
+        let generalPrompt = SummaryPrompts.finalPrompt(transcript: "Content", preset: .general)
+        #expect(generalPrompt.contains("**Overview**"))
+        #expect(generalPrompt.contains("**Key Points**"))
+        #expect(generalPrompt.contains("**Takeaways & Outcomes**"))
+        #expect(!generalPrompt.contains("**Decisions**"))
+
+        let meetingPrompt = SummaryPrompts.finalPrompt(transcript: "Content", preset: .meeting)
+        #expect(meetingPrompt.contains("**Summary**"))
+        #expect(meetingPrompt.contains("**Key Discussion Points**"))
+        #expect(meetingPrompt.contains("**Decisions**"))
+        #expect(meetingPrompt.contains("**Action Items**"))
     }
 
     @Test func updatePromptIncludesExistingSummaryAndNewUtterances() {
@@ -149,7 +175,14 @@ struct SummarizerTests {
         #expect(prompt.contains("Existing Summary Content"))
         #expect(prompt.contains("New Utterance Line"))
         #expect(prompt.contains("IMPORTANT INSTRUCTIONS:"))
-        #expect(prompt.contains("Synthesize the new discussion smoothly"))
+        #expect(prompt.contains("Synthesize the new content smoothly"))
+
+        let meetingPrompt = SummaryPrompts.updatePrompt(
+            existingSummary: "Existing Summary Content",
+            newUtterances: "New Utterance Line",
+            preset: .meeting
+        )
+        #expect(meetingPrompt.contains("expert meeting secretary"))
     }
 
     @Test func updatePromptAppliesCustomPrompt() {

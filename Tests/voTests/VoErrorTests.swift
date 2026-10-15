@@ -170,7 +170,7 @@ struct VoErrorTests {
         let err = VoError.summarizationFailed(reason: "Context window exceeded")
         let msg = err.description
 
-        #expect(msg.contains("Failed to generate meeting summary"))
+        #expect(msg.contains("Failed to generate summary"))
         #expect(msg.contains("Context window exceeded"))
     }
 }

@@ -191,7 +191,7 @@ actor StreamRenderer: Renderer {
     /// Display initial notification when summary mode is active.
     func renderInitialSummaryView() {
         guard isSummaryView, mode == .tty else { return }
-        writeLine("\u{001B}[38;5;244m(Real-time meeting summary enabled. Summary chunks will be appended as conversation progresses...)\u{001B}[0m\n")
+        writeLine("\u{001B}[38;5;244m(Real-time summary enabled. Summary chunks will be appended as audio progresses...)\u{001B}[0m\n")
     }
 
     /// Append a newly generated summary chunk to the terminal.

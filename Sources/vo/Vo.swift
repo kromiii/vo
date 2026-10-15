@@ -50,15 +50,18 @@ struct Vo: AsyncParsableCommand {
     @Option(
         name: .long,
         defaultAsFlag: "",
-        help: "Generate an on-device AI meeting summary / minutes at exit using Apple Intelligence Foundation Models. Optionally specify a file path to save the summary (Markdown)."
+        help: "Generate an on-device AI summary at exit using Apple Intelligence Foundation Models. Optionally specify a file path to save the summary (Markdown)."
     )
     var summary: String?
 
     @Option(name: .long, help: ArgumentHelp("Save the generated summary to this file (Markdown). (Deprecated: use --summary <path> instead)", visibility: .hidden))
     var summaryOut: String?
 
-    @Option(name: .long, help: "Custom prompt or instructions for the AI summary (defaults to structured meeting minutes).")
+    @Option(name: .long, help: "Custom prompt or instructions for the AI summary.")
     var summaryPrompt: String?
+
+    @Option(name: .long, help: "Summary preset style ('general' or 'meeting'). Defaults to 'general'.")
+    var summaryPreset: SummaryPreset?
 
     // MARK: - Run
 
@@ -68,7 +71,8 @@ struct Vo: AsyncParsableCommand {
             return
         }
 
-        let summaryEnabled = summary != nil || summaryOut != nil || summaryPrompt != nil
+        let summaryEnabled = summary != nil || summaryOut != nil || summaryPrompt != nil || summaryPreset != nil
+        let resolvedPreset = summaryPreset ?? .general
         let resolvedSummaryOut: String?
         if let summary, !summary.isEmpty {
             resolvedSummaryOut = summary
@@ -90,7 +94,8 @@ struct Vo: AsyncParsableCommand {
             transcript: transcript,
             summary: summaryEnabled,
             summaryOut: resolvedSummaryOut,
-            summaryPrompt: summaryPrompt
+            summaryPrompt: summaryPrompt,
+            summaryPreset: resolvedPreset
         )
     }
 }

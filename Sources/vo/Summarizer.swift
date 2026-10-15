@@ -1,14 +1,15 @@
 import Foundation
 import FoundationModels
 
-/// On-device meeting summarizer using Apple Intelligence Foundation Models (`SystemLanguageModel`).
+/// On-device summarizer using Apple Intelligence Foundation Models (`SystemLanguageModel`).
 ///
-/// Supports real-time rolling / incremental summarization during a live meeting session,
+/// Supports real-time rolling / incremental summarization during a live audio session,
 /// keeping memory and context window consumption bounded and updating the summary file live.
 actor Summarizer {
     let summaryOut: String?
     let customPrompt: String?
     let targetLanguage: String?
+    let preset: SummaryPreset
 
     /// Representation of a summarized transcript chunk.
     struct ChunkSummary: Sendable {
@@ -40,10 +41,16 @@ actor Summarizer {
     /// Minimum time between background summary updates if there are at least some pending lines.
     private let updateIntervalSeconds: TimeInterval = 60.0
 
-    init(summaryOut: String? = nil, customPrompt: String? = nil, targetLanguage: String? = nil) {
+    init(
+        summaryOut: String? = nil,
+        customPrompt: String? = nil,
+        targetLanguage: String? = nil,
+        preset: SummaryPreset = .general
+    ) {
         self.summaryOut = summaryOut
         self.customPrompt = customPrompt
         self.targetLanguage = targetLanguage
+        self.preset = preset
     }
 
     /// Extract an English display name for a given locale (e.g. "Japanese" for "ja-JP", "English" for "en-US").
@@ -166,7 +173,7 @@ actor Summarizer {
     }
 
     /// Finish summarization at session exit, incorporating any remaining pending lines,
-    /// synthesizing a unified meeting minutes document, and returning the final Markdown.
+    /// synthesizing a unified summary document, and returning the final Markdown.
     func finalize() async throws -> String {
         // Wait for any in-flight background update to complete
         while isUpdating {
@@ -191,7 +198,7 @@ actor Summarizer {
             }
         }
 
-        // Now synthesize the final unified meeting minutes
+        // Now synthesize the final unified summary
         try Self.checkAvailability()
         let result: String
 
@@ -202,7 +209,8 @@ actor Summarizer {
                     transcript: formatted,
                     isIntermediateSummary: false,
                     customPrompt: customPrompt,
-                    targetLanguage: targetLanguage
+                    targetLanguage: targetLanguage,
+                    preset: preset
                 )
                 let session = LanguageModelSession()
                 let response = try await session.respond(to: prompt)
@@ -216,7 +224,8 @@ actor Summarizer {
                 transcript: single.summaryText,
                 isIntermediateSummary: true,
                 customPrompt: customPrompt,
-                targetLanguage: targetLanguage
+                targetLanguage: targetLanguage,
+                preset: preset
             )
             let session = LanguageModelSession()
             let response = try await session.respond(to: prompt)
@@ -231,7 +240,8 @@ actor Summarizer {
                 transcript: combinedParts,
                 isIntermediateSummary: true,
                 customPrompt: customPrompt,
-                targetLanguage: targetLanguage
+                targetLanguage: targetLanguage,
+                preset: preset
             )
             let session = LanguageModelSession()
             let response = try await session.respond(to: prompt)
@@ -322,7 +332,8 @@ actor Summarizer {
             startTimestamp: startTime,
             endTimestamp: endTime,
             chunkText: formattedLines,
-            targetLanguage: targetLanguage
+            targetLanguage: targetLanguage,
+            preset: preset
         )
 
         let session = LanguageModelSession()
@@ -345,7 +356,7 @@ actor Summarizer {
 
     // MARK: - Batch API (for backwards compatibility & tests)
 
-    /// Generate a meeting summary from a batch of transcript lines (e.g. for offline evaluation).
+    /// Generate a summary from a batch of transcript lines (e.g. for offline evaluation).
     func summarize(lines: [TranscriptLine]) async throws -> String {
         partialSummaries = []
         finalSummary = ""

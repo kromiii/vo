@@ -16,7 +16,8 @@ func runListen(
     transcript: String?,
     summary: Bool = false,
     summaryOut: String? = nil,
-    summaryPrompt: String? = nil
+    summaryPrompt: String? = nil,
+    summaryPreset: SummaryPreset = .general
 ) async throws {
     let inputURL: URL?
     if let input {
@@ -121,7 +122,8 @@ func runListen(
     let summarizer: Summarizer? = summary ? Summarizer(
         summaryOut: summaryOut,
         customPrompt: summaryPrompt,
-        targetLanguage: targetLanguageName
+        targetLanguage: targetLanguageName,
+        preset: summaryPreset
     ) : nil
 
     let renderer = StreamRenderer(
@@ -287,18 +289,21 @@ private func finalizeSession(
         printSummary(count: count, duration: duration)
     }
 
-    // Finalize AI meeting summarization if enabled
+    // Finalize AI summarization if enabled
     if let summarizer {
         let totalCount = await summarizer.utteranceCount
         if count == 0 && totalCount == 0 {
             if isTTY {
-                print("\u{001B}[38;5;244m(No utterances captured; skipping meeting summary)\u{001B}[0m")
+                print("\u{001B}[38;5;244m(No utterances captured; skipping summary)\u{001B}[0m")
                 printSummary(count: count, duration: duration)
             }
             return
         }
 
-        let notice = "Finalizing unified meeting minutes with Apple Intelligence..."
+        let isMeeting = summarizer.preset == .meeting
+        let notice = isMeeting
+            ? "Finalizing meeting minutes with Apple Intelligence..."
+            : "Finalizing summary with Apple Intelligence..."
         if isTTY {
             print("\n\u{001B}[38;5;244m\(notice)\u{001B}[0m")
         } else {
@@ -314,18 +319,19 @@ private func finalizeSession(
 
             let summaryOut = summarizer.summaryOut
             if isTTY {
-                print("\n\u{001B}[1;36mvo\u{001B}[0m \u{001B}[1m• Final Meeting Minutes (Apple Intelligence)\u{001B}[0m")
+                let headerTitle = isMeeting ? "Final Meeting Minutes" : "Final Summary"
+                print("\n\u{001B}[1;36mvo\u{001B}[0m \u{001B}[1m• \(headerTitle) (Apple Intelligence)\u{001B}[0m")
                 print("\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m\n")
                 print(summaryMarkdown)
                 print("\n\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m")
                 printSummary(count: count, duration: duration)
                 if let summaryOut {
                     let resolved = (summaryOut as NSString).expandingTildeInPath
-                    print("Saved meeting summary: \(resolved)")
+                    print("Saved summary: \(resolved)")
                 }
             } else if let summaryOut {
                 let resolved = (summaryOut as NSString).expandingTildeInPath
-                let msg = "Saved meeting summary: \(resolved)"
+                let msg = "Saved summary: \(resolved)"
                 FileHandle.standardError.write(Data((msg + "\n").utf8))
             } else {
                 let summaryObj: [String: Any] = [
@@ -338,7 +344,7 @@ private func finalizeSession(
                 }
             }
         } catch {
-            let errorMsg = "Failed to generate meeting summary: \(error.localizedDescription)"
+            let errorMsg = "Failed to generate summary: \(error.localizedDescription)"
             if isTTY {
                 print("\u{001B}[31m\(errorMsg)\u{001B}[0m")
             } else {
