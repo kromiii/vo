@@ -97,7 +97,7 @@ enum SummaryPrompts {
             - **Title / Topic**: Concise Title / Topic
             - **Overview**: 2-4 concise sentences summarizing the main theme and overall context.
             - **Key Points**: Strictly 3-5 bullet points covering the most important concepts, discussion points, or highlights (each bullet should be 1-2 sentences). Do NOT exceed 5 bullets.
-            - **Takeaways & Outcomes**: 2-4 bullet points of notable conclusions, takeaways, or next steps (or write "None" / "特になし" if not applicable).
+            - **Takeaways & Outcomes**: 2-4 bullet points of notable conclusions, takeaways, or next steps (or write "None" if not applicable).
 
             ---
             \(transcript)
@@ -128,8 +128,8 @@ enum SummaryPrompts {
             - **Title / Header**: Meeting Title / Topic
             - **Summary**: 2-4 concise sentences summarizing the primary purpose, core outcome, and current status.
             - **Key Discussion Points**: Strictly 3-5 bullet points covering only the most important topics and agreed conclusions (each bullet should be 1-2 sentences). Do NOT exceed 5 bullets.
-            - **Decisions**: 2-4 bullet points of concrete agreements or decisions made (or write "None" / "特になし" if none).
-            - **Action Items**: 2-5 bullet points in checklist format `- [ ] [Owner] Task` focusing on concrete next steps (or write "None" / "特になし" if none).
+            - **Decisions**: 2-4 bullet points of concrete agreements or decisions made (or write "None" if none).
+            - **Action Items**: 2-5 bullet points in checklist format `- [ ] [Owner] Task` focusing on concrete next steps (or write "None" if none).
 
             ---
             \(transcript)
