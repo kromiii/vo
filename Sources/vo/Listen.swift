@@ -16,8 +16,7 @@ func runListen(
     transcript: String?,
     summary: Bool = false,
     summaryOut: String? = nil,
-    summaryPrompt: String? = nil,
-    summaryPreset: SummaryPreset = .general
+    summaryPrompt: String? = nil
 ) async throws {
     let inputURL: URL?
     if let input {
@@ -122,8 +121,7 @@ func runListen(
     let summarizer: Summarizer? = summary ? Summarizer(
         summaryOut: summaryOut,
         customPrompt: summaryPrompt,
-        targetLanguage: targetLanguageName,
-        preset: summaryPreset
+        targetLanguage: targetLanguageName
     ) : nil
 
     let renderer = StreamRenderer(
@@ -300,10 +298,7 @@ private func finalizeSession(
             return
         }
 
-        let isMeeting = summarizer.preset == .meeting
-        let notice = isMeeting
-            ? "Finalizing meeting minutes with Apple Intelligence..."
-            : "Finalizing summary with Apple Intelligence..."
+        let notice = "Finalizing summary with Apple Intelligence..."
         if isTTY {
             print("\n\u{001B}[38;5;244m\(notice)\u{001B}[0m")
         } else {
@@ -319,8 +314,7 @@ private func finalizeSession(
 
             let summaryOut = summarizer.summaryOut
             if isTTY {
-                let headerTitle = isMeeting ? "Final Meeting Minutes" : "Final Summary"
-                print("\n\u{001B}[1;36mvo\u{001B}[0m \u{001B}[1m• \(headerTitle) (Apple Intelligence)\u{001B}[0m")
+                print("\n\u{001B}[1;36mvo\u{001B}[0m \u{001B}[1m• Final Summary (Apple Intelligence)\u{001B}[0m")
                 print("\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m\n")
                 print(summaryMarkdown)
                 print("\n\u{001B}[38;5;240m" + String(repeating: "─", count: 70) + "\u{001B}[0m")

@@ -54,7 +54,7 @@ $ vo --no-mic --src en-US --dst ja-JP # Speaker only, with translation
 $ vo --input meeting.m4a              # Transcribe an on-disk audio file instead
 $ vo --summary                        # Transcribe and generate on-device summary at exit
 $ vo --summary min.md                 # Save summary directly to Markdown
-$ vo --summary --summary-preset meeting # Generate structured meeting minutes (decisions, action items)
+$ vo --summary min.md --summary-prompt "Extract decisions, action items, and key discussion points." # Meeting minutes
 $ vo --select-device                  # Pick & pin the mic / speaker at startup
 $ vo --json | jq                      # JSONL output for piping
 $ vo --doctor                         # Environment diagnostics
@@ -165,7 +165,6 @@ $ vo --src en-US,ja-JP                     # transcribe-only, language auto-pick
 | `--transcript <path>` | (none; prompts at exit in TTY) | Stream finalized chunks as JSONL to `<path>` incrementally. Skips the interactive save prompt |
 | `--summary [path]` | (none) | Generate on-device AI summary at exit using Apple Intelligence Foundation Models. Optionally save to `<path>` (Markdown) |
 | `--summary-prompt <prompt>` | (none) | Custom prompt or instructions for the AI summary |
-| `--summary-preset <preset>` | `general` | Summary preset style: `general` (overview, key points, takeaways) or `meeting` (minutes, decisions, action items) |
 | `--doctor` | | Print full environment diagnostics and exit |
 
 `vo --doctor` lists supported locales, installed speech models, available translation languages, and audio input devices. Run it first if something behaves unexpectedly.

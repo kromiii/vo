@@ -46,25 +46,4 @@ struct VoSummaryOptionsTests {
         #expect(vo.summary == "")
         #expect(vo.summaryOut == "min.md")
     }
-
-    @Test func summaryPresetDefaultIsNilWhenUnspecified() throws {
-        let vo = try Vo.parse([])
-        #expect(vo.summaryPreset == nil)
-    }
-
-    @Test func summaryPresetMeeting() throws {
-        let vo = try Vo.parse(["--summary-preset", "meeting"])
-        #expect(vo.summaryPreset == .meeting)
-    }
-
-    @Test func summaryPresetGeneral() throws {
-        let vo = try Vo.parse(["--summary-preset", "general"])
-        #expect(vo.summaryPreset == .general)
-    }
-
-    @Test func summaryWithPresetCombined() throws {
-        let vo = try Vo.parse(["--summary", "out.md", "--summary-preset", "meeting"])
-        #expect(vo.summary == "out.md")
-        #expect(vo.summaryPreset == .meeting)
-    }
 }

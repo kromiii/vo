@@ -49,7 +49,7 @@ Flat command (no subcommands). `--doctor` is the only "different mode"; everythi
 vo [--src LOCALE] [--dst LOCALE] [--no-mic] [--no-speaker]
    [--voice-processing] [--select-device] [--input PATH]
    [--transcript PATH] [--summary [PATH]]
-   [--summary-prompt PROMPT] [--summary-preset PRESET]
+   [--summary-prompt PROMPT]
    [--doctor] [--json]
 ```
 
@@ -63,7 +63,6 @@ vo [--src LOCALE] [--dst LOCALE] [--no-mic] [--no-speaker]
 - `--transcript PATH` streams finalized chunks as JSONL into `PATH`. Without it, vo streams the same JSONL into a temp file under `TMPDIR` and at Ctrl-C asks `Save transcript to ./vo-<stamp>.jsonl? [Y/n/<path>]`. If the chosen target (or `PATH` itself) exists, vo prompts `Overwrite? [y/N]`. Memory usage stays bounded across long sessions because nothing is buffered.
 - `--summary [PATH]` generates on-device summary using Apple Intelligence Foundation Models (`SystemLanguageModel`). Feeds finalized chunks incrementally into a rolling background summarizer (`Summarizer` actor), keeping memory and context window bounded across arbitrarily long sessions and updating the summary live. If `PATH` is specified, keeps the generated Markdown file updated live and writes final summary at exit; otherwise prints to STDOUT in TTY mode. Fails fast if Foundation Models is not available.
 - `--summary-prompt PROMPT` customizes the instructions passed to the Foundation Model.
-- `--summary-preset PRESET` selects the summary style preset (`general` for overview/key points/takeaways, `meeting` for structured meeting minutes with decisions/action items). Defaults to `general`.
 
 ## Architecture
 
@@ -116,7 +115,7 @@ The whole pipeline is one TaskGroup orchestrating two parallel channels (mic + s
 | `TranslationWorker.swift` | `TranslationWorker`, which drives one `TranslationBackend` per (src → dst) pair with **exactly one call in flight**. Chunks that queue up while a call runs go out together in the next call (`translate(batch:)`, capped at `maxTranslationBatch`), so it translates one chunk at a time when keeping up and catches up in bulk when not. A call that yields no result for `translationStallTimeout` is abandoned (not awaited, since a wedged call may ignore cancellation), the session is rebuilt with a one-line stderr notice, and the unanswered chunks are retried one by one. A chunk in `maxTranslationStallAttempts` stalls, or one that throws on its own, becomes `[translation failed: …]` so the strict-order commit is never blocked for good. This replaced a fan-out of four concurrent `translate(_:)` calls on a shared session, after which a live session was seen to stop answering permanently. |
 | `SessionLog.swift` | Streaming JSONL transcript file. Two modes: explicit (`--transcript <path>` writes directly there) or temp (`TMPDIR` file moved/discarded on exit). Owns the overwrite-confirm and `Save transcript?` prompts. |
 | `Summarizer.swift` | On-device summarization actor using Apple Intelligence `FoundationModels` (`SystemLanguageModel`). Supports real-time rolling / incremental summarization during live capture, bounded memory & context window. |
-| `SummaryPrompts.swift` | Prompt templates and presets for Foundation Models summarization (general summary, meeting minutes, and custom prompt builders). |
+| `SummaryPrompts.swift` | Prompt templates for Foundation Models summarization (overview, key points, takeaways, and custom prompt builders). |
 
 ### Key invariants in `StreamRenderer`
 

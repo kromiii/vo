@@ -60,9 +60,6 @@ struct Vo: AsyncParsableCommand {
     @Option(name: .long, help: "Custom prompt or instructions for the AI summary.")
     var summaryPrompt: String?
 
-    @Option(name: .long, help: "Summary preset style ('general' or 'meeting'). Defaults to 'general'.")
-    var summaryPreset: SummaryPreset?
-
     // MARK: - Run
 
     func run() async throws {
@@ -71,8 +68,7 @@ struct Vo: AsyncParsableCommand {
             return
         }
 
-        let summaryEnabled = summary != nil || summaryOut != nil || summaryPrompt != nil || summaryPreset != nil
-        let resolvedPreset = summaryPreset ?? .general
+        let summaryEnabled = summary != nil || summaryOut != nil || summaryPrompt != nil
         let resolvedSummaryOut: String?
         if let summary, !summary.isEmpty {
             resolvedSummaryOut = summary
@@ -94,8 +90,7 @@ struct Vo: AsyncParsableCommand {
             transcript: transcript,
             summary: summaryEnabled,
             summaryOut: resolvedSummaryOut,
-            summaryPrompt: summaryPrompt,
-            summaryPreset: resolvedPreset
+            summaryPrompt: summaryPrompt
         )
     }
 }

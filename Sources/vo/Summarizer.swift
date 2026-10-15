@@ -9,7 +9,6 @@ actor Summarizer {
     let summaryOut: String?
     let customPrompt: String?
     let targetLanguage: String?
-    let preset: SummaryPreset
 
     /// Representation of a summarized transcript chunk.
     struct ChunkSummary: Sendable {
@@ -44,13 +43,11 @@ actor Summarizer {
     init(
         summaryOut: String? = nil,
         customPrompt: String? = nil,
-        targetLanguage: String? = nil,
-        preset: SummaryPreset = .general
+        targetLanguage: String? = nil
     ) {
         self.summaryOut = summaryOut
         self.customPrompt = customPrompt
         self.targetLanguage = targetLanguage
-        self.preset = preset
     }
 
     /// Extract an English display name for a given locale (e.g. "Japanese" for "ja-JP", "English" for "en-US").
@@ -209,8 +206,7 @@ actor Summarizer {
                     transcript: formatted,
                     isIntermediateSummary: false,
                     customPrompt: customPrompt,
-                    targetLanguage: targetLanguage,
-                    preset: preset
+                    targetLanguage: targetLanguage
                 )
                 let session = LanguageModelSession()
                 let response = try await session.respond(to: prompt)
@@ -224,8 +220,7 @@ actor Summarizer {
                 transcript: single.summaryText,
                 isIntermediateSummary: true,
                 customPrompt: customPrompt,
-                targetLanguage: targetLanguage,
-                preset: preset
+                targetLanguage: targetLanguage
             )
             let session = LanguageModelSession()
             let response = try await session.respond(to: prompt)
@@ -240,8 +235,7 @@ actor Summarizer {
                 transcript: combinedParts,
                 isIntermediateSummary: true,
                 customPrompt: customPrompt,
-                targetLanguage: targetLanguage,
-                preset: preset
+                targetLanguage: targetLanguage
             )
             let session = LanguageModelSession()
             let response = try await session.respond(to: prompt)
@@ -332,8 +326,7 @@ actor Summarizer {
             startTimestamp: startTime,
             endTimestamp: endTime,
             chunkText: formattedLines,
-            targetLanguage: targetLanguage,
-            preset: preset
+            targetLanguage: targetLanguage
         )
 
         let session = LanguageModelSession()
