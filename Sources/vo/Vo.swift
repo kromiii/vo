@@ -54,9 +54,6 @@ struct Vo: AsyncParsableCommand {
     )
     var summary: String?
 
-    @Option(name: .long, help: ArgumentHelp("Save the generated summary to this file (Markdown). (Deprecated: use --summary <path> instead)", visibility: .hidden))
-    var summaryOut: String?
-
     @Option(name: .long, help: "Custom prompt or instructions for the AI summary.")
     var summaryPrompt: String?
 
@@ -68,12 +65,10 @@ struct Vo: AsyncParsableCommand {
             return
         }
 
-        let summaryEnabled = summary != nil || summaryOut != nil || summaryPrompt != nil
+        let summaryEnabled = summary != nil || summaryPrompt != nil
         let resolvedSummaryOut: String?
         if let summary, !summary.isEmpty {
             resolvedSummaryOut = summary
-        } else if let summaryOut, !summaryOut.isEmpty {
-            resolvedSummaryOut = summaryOut
         } else {
             resolvedSummaryOut = nil
         }

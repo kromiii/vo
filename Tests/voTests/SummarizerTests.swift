@@ -148,29 +148,6 @@ struct SummarizerTests {
         #expect(prompt.contains("**Takeaways & Outcomes**"))
     }
 
-    @Test func updatePromptIncludesExistingSummaryAndNewUtterances() {
-        let prompt = SummaryPrompts.updatePrompt(
-            existingSummary: "Existing Summary Content",
-            newUtterances: "New Utterance Line"
-        )
-        #expect(prompt.contains("Existing Summary Content"))
-        #expect(prompt.contains("New Utterance Line"))
-        #expect(prompt.contains("IMPORTANT INSTRUCTIONS:"))
-        #expect(prompt.contains("Synthesize the new content smoothly"))
-    }
-
-    @Test func updatePromptAppliesCustomPrompt() {
-        let prompt = SummaryPrompts.updatePrompt(
-            existingSummary: "Existing Summary Content",
-            newUtterances: "New Utterance Line",
-            customPrompt: "Custom Update Rule"
-        )
-        #expect(prompt.contains("Custom Update Rule"))
-        #expect(prompt.contains("Existing Summary Content"))
-        #expect(prompt.contains("New Utterance Line"))
-        #expect(!prompt.contains("IMPORTANT INSTRUCTIONS:"))
-    }
-
     @Test func summarizerTracksUtteranceCountAndAppends() async {
         let summarizer = Summarizer(summaryOut: nil, customPrompt: nil)
         #expect(await summarizer.utteranceCount == 0)
@@ -200,6 +177,104 @@ struct SummarizerTests {
         #expect(Summarizer.languageDisplayName(for: Locale(identifier: "ja-JP")) == "Japanese")
         #expect(Summarizer.languageDisplayName(for: Locale(identifier: "en-US")) == "English")
         #expect(Summarizer.languageDisplayName(for: Locale(identifier: "fr-FR")) == "French")
+    }
+
+    @Test func shortSessionSummarizesDirectlyInOneCall() async throws {
+        actor CallRecorder {
+            var prompts: [String] = []
+            func record(_ p: String) { prompts.append(p) }
+        }
+        let recorder = CallRecorder()
+        let summarizer = Summarizer(
+            summaryOut: nil,
+            customPrompt: "Extract exact numbers.",
+            responder: { prompt in
+                await recorder.record(prompt)
+                return "# Final Summary"
+            }
+        )
+
+        for i in 1...5 {
+            await summarizer.append(Summarizer.TranscriptLine(timestamp: "10:00:0\(i)", channel: "mic", text: "Line \(i)"))
+        }
+
+        let result = try await summarizer.finalize()
+        let prompts = await recorder.prompts
+
+        #expect(result == "# Final Summary")
+        #expect(prompts.count == 1)
+        #expect(prompts[0].contains("Extract exact numbers."))
+        #expect(prompts[0].contains("Line 1"))
+        #expect(await summarizer.partialSummaries.isEmpty)
+    }
+
+    @Test func longBacklogBatchesIntoChunksOfAtMost25Lines() async throws {
+        let lines = (1...60).map { i in
+            Summarizer.TranscriptLine(timestamp: "10:00:00", channel: "mic", text: "Utterance \(i)")
+        }
+        let summarizer = Summarizer(
+            summaryOut: nil,
+            customPrompt: nil,
+            responder: { prompt in
+                if prompt.contains("The following is part") {
+                    return "- Chunk bullet"
+                }
+                return "# Synthesized Summary"
+            }
+        )
+
+        let result = try await summarizer.summarize(lines: lines)
+        let chunks = await summarizer.partialSummaries
+
+        #expect(result == "# Synthesized Summary")
+        #expect(chunks.count == 3)
+        #expect(chunks.map(\.utteranceCount) == [25, 25, 10])
+    }
+
+    @Test func unwritableSummaryOutThrowsSummarizationFailed() async {
+        let summarizer = Summarizer(
+            summaryOut: "/nonexistent-dir-\(UUID().uuidString)/summary.md",
+            customPrompt: nil,
+            responder: { _ in "# Summary" }
+        )
+        await summarizer.append(Summarizer.TranscriptLine(timestamp: "10:00:00", channel: "mic", text: "Hello"))
+
+        await #expect(throws: VoError.self) {
+            _ = try await summarizer.finalize()
+        }
+    }
+
+    @Test func appendSummaryChunkStillWritesAfterEOF() async {
+        let pipe = Pipe()
+        let renderer = StreamRenderer(
+            mode: .tty,
+            sourceLang: "en-US",
+            targetLang: "",
+            translationEnabled: false,
+            showChannelLabel: true,
+            out: pipe.fileHandleForWriting,
+            isSummaryView: true
+        )
+
+        await renderer.handle(.eof)
+        await renderer.appendSummaryChunk(
+            Summarizer.ChunkSummary(
+                index: 1,
+                startTime: "10:01:00",
+                endTime: "10:02:00",
+                utteranceCount: 12,
+                summaryText: "- Final chunk summary"
+            )
+        )
+        await renderer.flush()
+
+        try? pipe.fileHandleForWriting.close()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        try? pipe.fileHandleForReading.close()
+        let output = String(decoding: data, as: UTF8.self)
+
+        #expect(output.contains("Part 2 (12 utterances)"))
+        #expect(output.contains("- Final chunk summary"))
     }
 }
 

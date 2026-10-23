@@ -40,6 +40,19 @@ func runListen(
     if summary {
         // Fail-fast if Apple Intelligence / Foundation Models is unavailable before capturing starts
         try Summarizer.checkAvailability()
+        if let summaryOut {
+            let resolvedSummary = (summaryOut as NSString).expandingTildeInPath
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: resolvedSummary, isDirectory: &isDir), isDir.boolValue {
+                throw ValidationError("Cannot write summary to \(resolvedSummary): path is a directory.")
+            }
+            let parentDir = (resolvedSummary as NSString).deletingLastPathComponent
+            let effectiveParent = parentDir.isEmpty ? "." : parentDir
+            var isParentDir: ObjCBool = false
+            if !FileManager.default.fileExists(atPath: effectiveParent, isDirectory: &isParentDir) || !isParentDir.boolValue {
+                throw ValidationError("Cannot write summary to \(resolvedSummary): parent directory does not exist.")
+            }
+        }
     }
 
     // Claim vo's own TCC identity before touching audio, so the Microphone / Speech
@@ -86,14 +99,16 @@ func runListen(
     let mode = detectRenderMode(jsonForced: json)
     let isTTY = (mode == .tty)
 
+    let isSummaryView = isTTY && summary
+
     // Stream JSONL to disk as utterances finalize, so memory stays bounded for long
     // sessions. With --transcript we write straight to the user-specified path.
     // Without it, we use a temp file and decide at shutdown whether to keep or
     // discard. If the session can do neither (no --transcript AND no save prompt —
-    // e.g. piped JSONL run), skip the temp file entirely so we don't burn disk I/O
-    // writing bytes we know we are about to discard, and don't leave a large temp
-    // behind on a SIGKILL.
-    let canSaveTranscript = transcript != nil || (isTTY && canPromptForLog()) || summary
+    // e.g. piped JSONL run or summary view), skip the temp file entirely so we don't
+    // burn disk I/O writing bytes we know we are about to discard, and don't leave a
+    // large temp behind on a SIGKILL.
+    let canSaveTranscript = transcript != nil || (isTTY && !isSummaryView && canPromptForLog())
     let sessionLog: SessionLog? = canSaveTranscript ? try SessionLog.open(explicitPath: transcript) : nil
 
     // If we throw out of this function before finalizeSession runs (e.g. the pipeline
@@ -115,9 +130,9 @@ func runListen(
     // single-channel live modes (--no-mic / --no-speaker) suppress [mic] / [spk].
     let showChannelLabel = inputURL == nil && mic && speaker
 
-    let isSummaryView = isTTY && summary
-    let summaryLocale = primaryTarget ?? primarySource
-    let targetLanguageName = Summarizer.languageDisplayName(for: summaryLocale)
+    let effectiveSummaryLocales = targetLocales ?? sourceLocales
+    let uniqueLangNames = Set(effectiveSummaryLocales.map { Summarizer.languageDisplayName(for: $0) })
+    let targetLanguageName: String? = (uniqueLangNames.count == 1) ? uniqueLangNames.first : nil
     let summarizer: Summarizer? = summary ? Summarizer(
         summaryOut: summaryOut,
         customPrompt: summaryPrompt,
@@ -261,16 +276,6 @@ private func finalizeSession(
     summarizer: Summarizer?,
     isSummaryView: Bool = false
 ) async {
-    // If summary was requested, read the transcript lines from the session log BEFORE
-    // resolveSessionLog potentially discards the temp file, as a fallback source.
-    var transcriptLinesFallback: [Summarizer.TranscriptLine] = []
-    if summarizer != nil, let sessionLog, count > 0 {
-        sessionLog.close()
-        if let loaded = try? Summarizer.loadTranscriptLines(fromPath: sessionLog.path) {
-            transcriptLinesFallback = loaded
-        }
-    }
-
     if let sessionLog {
         // Gate the save prompt on isTTY (renderer mode), not just on canPromptForLog().
         // When in isSummaryView, don't show the interactive prompt on STDOUT to preserve
@@ -306,11 +311,7 @@ private func finalizeSession(
         }
 
         do {
-            var summaryMarkdown = try await summarizer.finalize()
-            if summaryMarkdown.isEmpty && !transcriptLinesFallback.isEmpty {
-                // Fallback in case streaming didn't process
-                summaryMarkdown = try await summarizer.summarize(lines: transcriptLinesFallback)
-            }
+            let summaryMarkdown = try await summarizer.finalize()
 
             let summaryOut = summarizer.summaryOut
             if isTTY {
@@ -338,7 +339,7 @@ private func finalizeSession(
                 }
             }
         } catch {
-            let errorMsg = "Failed to generate summary: \(error.localizedDescription)"
+            let errorMsg = (error as? VoError)?.description ?? "Failed to generate summary: \(error.localizedDescription)"
             if isTTY {
                 print("\u{001B}[31m\(errorMsg)\u{001B}[0m")
             } else {

@@ -36,7 +36,7 @@ private func gatherDoctorReport() async -> DoctorReport {
     let speech = await collectSpeechLocales()
     let translation = await collectTranslationLanguages()
     let devices = (try? collectInputDevices()) ?? []
-    let fmStatus = collectFoundationModelsStatus()
+    let fmStatus = Summarizer.availabilityStatus()
 
     return DoctorReport(
         osVersion: osStr,
@@ -48,27 +48,6 @@ private func gatherDoctorReport() async -> DoctorReport {
         foundationModelsAvailable: fmStatus.available,
         foundationModelsReason: fmStatus.reason
     )
-}
-
-private func collectFoundationModelsStatus() -> (available: Bool, reason: String?) {
-    let availability = SystemLanguageModel.default.availability
-    switch availability {
-    case .available:
-        return (true, nil)
-    case .unavailable(let reason):
-        let text: String
-        switch reason {
-        case .deviceNotEligible:
-            text = "Device is not eligible for Apple Intelligence"
-        case .appleIntelligenceNotEnabled:
-            text = "Apple Intelligence is disabled in System Settings"
-        case .modelNotReady:
-            text = "Foundation model is still downloading or preparing"
-        @unknown default:
-            text = "Foundation model is unavailable"
-        }
-        return (false, text)
-    }
 }
 
 // MARK: - Text output

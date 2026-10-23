@@ -196,7 +196,7 @@ actor StreamRenderer: Renderer {
 
     /// Append a newly generated summary chunk to the terminal.
     func appendSummaryChunk(_ chunk: Summarizer.ChunkSummary) {
-        guard isSummaryView, mode == .tty, !isShuttingDown else { return }
+        guard isSummaryView, mode == .tty else { return }
         var header = "\u{001B}[1;36m"
         if !chunk.startTime.isEmpty && !chunk.endTime.isEmpty {
             header += "[\(chunk.startTime) - \(chunk.endTime)]"
