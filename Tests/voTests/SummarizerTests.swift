@@ -276,5 +276,169 @@ struct SummarizerTests {
         #expect(output.contains("Part 2 (12 utterances)"))
         #expect(output.contains("- Final chunk summary"))
     }
+
+    @Test func backgroundChunkFailureBacksOffAndSkipsAfterMaxAttempts() async throws {
+        actor Tracker {
+            var chunkCalls: Int = 0
+            var notices: [String] = []
+            func recordCall() { chunkCalls += 1 }
+            func recordNotice(_ n: String) { notices.append(n) }
+        }
+        let tracker = Tracker()
+
+        let summarizer = Summarizer(
+            summaryOut: nil,
+            customPrompt: nil,
+            updateIntervalSeconds: 60.0,
+            maxChunkAttempts: 1,
+            onNotice: { msg in
+                Task { await tracker.recordNotice(msg) }
+            },
+            responder: { prompt in
+                if prompt.contains("The following is part") {
+                    await tracker.recordCall()
+                    if prompt.contains("Poisoned 1") {
+                        throw VoError.summarizationFailed(reason: "guardrail violation")
+                    }
+                    return "- Good chunk summary"
+                }
+                return "# Unified Summary"
+            }
+        )
+
+        // Feed 25 poisoned utterances -> triggers background update #1 which fails and skips immediately (maxChunkAttempts = 1)
+        for i in 1...25 {
+            await summarizer.append(Summarizer.TranscriptLine(timestamp: "10:00:00", channel: "mic", text: "Poisoned \(i)"))
+        }
+
+        // Feed 25 good utterances -> since the poisoned batch was dropped, these form the next batch cleanly
+        for i in 1...25 {
+            await summarizer.append(Summarizer.TranscriptLine(timestamp: "10:01:00", channel: "mic", text: "Valid \(i)"))
+        }
+
+        let result = try await summarizer.finalize()
+        // Allow detached notice task to settle
+        try? await Task.sleep(for: .milliseconds(20))
+
+        let calls = await tracker.chunkCalls
+        let notices = await tracker.notices
+        let chunks = await summarizer.partialSummaries
+
+        #expect(result == "# Unified Summary")
+        #expect(calls == 2)
+        #expect(chunks.count == 1)
+        #expect(chunks[0].summaryText == "- Good chunk summary")
+        #expect(!notices.isEmpty)
+        #expect(notices[0].contains("Skipping batch of 25 utterances"))
+    }
+
+    @Test func backgroundRetryWaitsForIntervalInsteadOfRetriggeringPerAppend() async throws {
+        actor CallCounter {
+            var count = 0
+            func increment() -> Int {
+                count += 1
+                return count
+            }
+        }
+        let counter = CallCounter()
+
+        let summarizer = Summarizer(
+            summaryOut: nil,
+            customPrompt: nil,
+            updateIntervalSeconds: 3600.0, // long backoff
+            maxChunkAttempts: 2,
+            onNotice: { _ in },
+            responder: { prompt in
+                if prompt.contains("The following is part") {
+                    let c = await counter.increment()
+                    if c == 1 {
+                        throw VoError.summarizationFailed(reason: "transient error")
+                    }
+                    return "- Recovered chunk"
+                }
+                return "# Final"
+            }
+        )
+
+        // First 25 lines trigger attempt #1, which fails and re-queues with currentBatchFailureCount == 1
+        for i in 1...25 {
+            await summarizer.append(Summarizer.TranscriptLine(timestamp: "10:00:00", channel: "mic", text: "Item \(i)"))
+        }
+        // Wait briefly for the background task to complete its first failed attempt
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await counter.count == 1)
+
+        // Appending 10 more utterances must NOT fire 10 LLM calls while inside the backoff window
+        for i in 26...35 {
+            await summarizer.append(Summarizer.TranscriptLine(timestamp: "10:00:01", channel: "mic", text: "Item \(i)"))
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await counter.count == 1)
+
+        // Finalize drains and succeeds on the retry
+        let final = try await summarizer.finalize()
+        #expect(final == "# Final")
+        #expect(await summarizer.partialSummaries.count == 2)
+    }
+
+    @Test func finalizeDropsFailingMapBatchesAndPreservesFinalSummary() async throws {
+        actor FinalPromptRecorder {
+            var finalPrompt: String = ""
+            func set(_ p: String) { finalPrompt = p }
+        }
+        let recorder = FinalPromptRecorder()
+
+        let lines = (1...75).map { i in
+            Summarizer.TranscriptLine(timestamp: "10:00:00", channel: "mic", text: "Utterance \(i)")
+        }
+
+        let summarizer = Summarizer(
+            summaryOut: nil,
+            customPrompt: nil,
+            maxChunkAttempts: 1,
+            onNotice: { _ in },
+            responder: { prompt in
+                if prompt.contains("The following is part") {
+                    // Fail on the second batch (Utterance 26..50), succeed on 1st and 3rd
+                    if prompt.contains("Utterance 26") {
+                        throw VoError.summarizationFailed(reason: "context overflow")
+                    }
+                    return "- Chunk summary"
+                }
+                await recorder.set(prompt)
+                return "# Synthesized Despite Failure"
+            }
+        )
+
+        let result = try await summarizer.summarize(lines: lines)
+        let chunks = await summarizer.partialSummaries
+        let recordedPrompt = await recorder.finalPrompt
+
+        #expect(result == "# Synthesized Despite Failure")
+        // Batch 1 (1..25) and Batch 3 (51..75) both succeeded; Batch 2 was skipped without breaking the loop
+        #expect(chunks.count == 2)
+        // Poisoned Batch 2 is NOT dumped as raw Remaining Transcript into the Reduce prompt
+        #expect(!recordedPrompt.contains("Utterance 26"))
+        #expect(!recordedPrompt.contains("Remaining Transcript"))
+    }
+
+    @Test func boundedFallbackLinesTruncatesExcessiveLinesAndChars() {
+        let manyLines = (1...100).map { i in
+            Summarizer.TranscriptLine(
+                timestamp: "10:00:00",
+                channel: "mic",
+                text: "Message \(i) " + String(repeating: "x", count: 100)
+            )
+        }
+
+        let bounded = Summarizer.boundedFallbackLines(from: manyLines, maxLines: 25, maxChars: 600)
+        let formatted = Summarizer.formatTranscript(bounded)
+
+        #expect(!bounded.isEmpty)
+        #expect(bounded.count <= 25)
+        #expect(formatted.count <= 600)
+        // Keeps the most recent lines at the tail
+        #expect(bounded.last?.text.contains("Message 100") == true)
+    }
 }
 

@@ -31,10 +31,14 @@ actor Summarizer {
 
     /// Callback invoked when a new chunk summary is produced.
     typealias ChunkHandler = @Sendable (ChunkSummary) async -> Void
+    /// Callback invoked to emit a one-line status / warning notice (e.g. to stderr).
+    typealias NoticeHandler = @Sendable (String) -> Void
     /// Optional custom responder used in tests to bypass live FoundationModels inference.
     typealias Responder = @Sendable (String) async throws -> String
     private var onAppendChunk: ChunkHandler?
+    private let onNotice: NoticeHandler
     private let responder: Responder?
+    private var currentBatchFailureCount: Int = 0
 
     func setOnAppendChunk(_ handler: @escaping ChunkHandler) {
         self.onAppendChunk = handler
@@ -43,17 +47,27 @@ actor Summarizer {
     /// Threshold of pending lines before triggering an automatic background summary update.
     private let updateChunkThreshold = 25
     /// Minimum time between background summary updates if there are at least some pending lines.
-    private let updateIntervalSeconds: TimeInterval = 60.0
+    private let updateIntervalSeconds: TimeInterval
+    /// Maximum attempts on a single chunk batch before skipping it.
+    let maxChunkAttempts: Int
 
     init(
         summaryOut: String? = nil,
         customPrompt: String? = nil,
         targetLanguage: String? = nil,
+        updateIntervalSeconds: TimeInterval = 60.0,
+        maxChunkAttempts: Int = 2,
+        onNotice: @escaping NoticeHandler = { message in
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+        },
         responder: Responder? = nil
     ) {
         self.summaryOut = summaryOut
         self.customPrompt = customPrompt
         self.targetLanguage = targetLanguage
+        self.updateIntervalSeconds = updateIntervalSeconds
+        self.maxChunkAttempts = max(1, maxChunkAttempts)
+        self.onNotice = onNotice
         self.responder = responder
     }
 
@@ -186,6 +200,9 @@ actor Summarizer {
         totalCapturedLines
     }
 
+    /// Maximum raw characters of unsummarized fallback transcript to inline into the final Reduce prompt.
+    private static let maxRemainingFallbackChars = 2000
+
     /// Finish summarization at session exit, incorporating any remaining pending lines,
     /// synthesizing a unified summary document, and returning the final Markdown.
     func finalize() async throws -> String {
@@ -198,6 +215,7 @@ actor Summarizer {
         // drain pendingLines in batches of updateChunkThreshold via the Map step first.
         // For a short session (partialSummaries.isEmpty && pendingLines.count <= updateChunkThreshold),
         // skip the intermediate chunk step so we summarize the raw transcript directly in one LLM call.
+        var unmappedLines: [TranscriptLine] = []
         if !partialSummaries.isEmpty || pendingLines.count > updateChunkThreshold {
             while !pendingLines.isEmpty {
                 let batchCount = min(pendingLines.count, updateChunkThreshold)
@@ -206,20 +224,45 @@ actor Summarizer {
                 do {
                     let chunk = try await performChunkSummarize(lines: lines, index: chunkIndex)
                     chunkIndex += 1
+                    currentBatchFailureCount = 0
                     partialSummaries.append(chunk)
                     writeInterimSummaryToFileIfNeeded()
                     if let onAppendChunk {
                         await onAppendChunk(chunk)
                     }
                 } catch {
-                    // If chunk summarization fails, keep remaining lines for direct fallback below
-                    pendingLines.insert(contentsOf: lines, at: 0)
-                    break
+                    let nextAttempts = currentBatchFailureCount + 1
+                    var chunk: ChunkSummary?
+                    if nextAttempts < maxChunkAttempts {
+                        chunk = try? await performChunkSummarize(lines: lines, index: chunkIndex)
+                    }
+                    if let chunk {
+                        chunkIndex += 1
+                        currentBatchFailureCount = 0
+                        partialSummaries.append(chunk)
+                        writeInterimSummaryToFileIfNeeded()
+                        if let onAppendChunk {
+                            await onAppendChunk(chunk)
+                        }
+                    } else {
+                        let reason = singleLine((error as? VoError)?.description ?? error.localizedDescription)
+                        onNotice("vo: chunk summary failed (\(reason)). Skipping batch of \(lines.count) utterances.")
+                        currentBatchFailureCount = 0
+                        // Only retain a failing tail if no partial summaries exist at all so the
+                        // session can still attempt a bounded fallback; otherwise drop the poisoned
+                        // batch so it cannot take down the final Reduce call.
+                        if partialSummaries.isEmpty && pendingLines.isEmpty {
+                            unmappedLines.append(contentsOf: lines)
+                        }
+                    }
                 }
             }
+        } else {
+            unmappedLines = pendingLines
+            pendingLines.removeAll()
         }
 
-        if partialSummaries.isEmpty && pendingLines.isEmpty {
+        if partialSummaries.isEmpty && unmappedLines.isEmpty {
             return "No transcript content was captured to summarize."
         }
 
@@ -227,15 +270,15 @@ actor Summarizer {
         let prompt: String
 
         if partialSummaries.isEmpty {
-            let formatted = Self.formatTranscript(pendingLines)
-            pendingLines.removeAll()
+            let tail = Self.boundedFallbackLines(from: unmappedLines)
+            let formatted = Self.formatTranscript(tail)
             prompt = SummaryPrompts.finalPrompt(
                 transcript: formatted,
                 isIntermediateSummary: false,
                 customPrompt: customPrompt,
                 targetLanguage: targetLanguage
             )
-        } else if partialSummaries.count == 1 && pendingLines.isEmpty {
+        } else if partialSummaries.count == 1 && unmappedLines.isEmpty {
             let single = partialSummaries[0]
             prompt = SummaryPrompts.finalPrompt(
                 transcript: single.summaryText,
@@ -248,9 +291,11 @@ actor Summarizer {
                 let timeRange = (!part.startTime.isEmpty && !part.endTime.isEmpty) ? " [\(part.startTime) - \(part.endTime)]" : ""
                 return "### Part \(part.index + 1)\(timeRange)\n\(part.summaryText)"
             }
-            if !pendingLines.isEmpty {
-                parts.append("### Remaining Transcript\n\(Self.formatTranscript(pendingLines))")
-                pendingLines.removeAll()
+            if !unmappedLines.isEmpty {
+                let tail = Self.boundedFallbackLines(from: unmappedLines)
+                if !tail.isEmpty {
+                    parts.append("### Remaining Transcript\n\(Self.formatTranscript(tail))")
+                }
             }
             let combinedParts = parts.joined(separator: "\n\n")
 
@@ -268,11 +313,54 @@ actor Summarizer {
         return result
     }
 
+    /// Return at most `updateChunkThreshold` trailing lines whose formatted representation fits
+    /// within `maxRemainingFallbackChars` so an unsummarized fallback never overflows the
+    /// on-device model's context window.
+    nonisolated static func boundedFallbackLines(
+        from lines: [TranscriptLine],
+        maxLines: Int = 25,
+        maxChars: Int = maxRemainingFallbackChars
+    ) -> [TranscriptLine] {
+        guard !lines.isEmpty else { return [] }
+        let candidates = lines.suffix(maxLines)
+        var selected: [TranscriptLine] = []
+        var totalChars = 0
+
+        for line in candidates.reversed() {
+            let formattedLine = formatTranscript([line])
+            let clampedText: String
+            if formattedLine.count > maxChars {
+                clampedText = String(line.text.prefix(max(0, maxChars - 32)))
+            } else {
+                clampedText = line.text
+            }
+            let effectiveLine = (clampedText == line.text)
+                ? line
+                : TranscriptLine(timestamp: line.timestamp, channel: line.channel, text: clampedText)
+            let cost = formatTranscript([effectiveLine]).count + (selected.isEmpty ? 0 : 1)
+            if !selected.isEmpty && totalChars + cost > maxChars {
+                break
+            }
+            selected.append(effectiveLine)
+            totalChars += cost
+            if totalChars >= maxChars {
+                break
+            }
+        }
+        return selected.reversed()
+    }
+
     // MARK: - Background Update Logic
 
     private func checkTriggerUpdate() {
         guard !isUpdating, !isFinalizing else { return }
         let elapsed = Date().timeIntervalSince(lastUpdateTime)
+        if currentBatchFailureCount > 0 {
+            if elapsed >= updateIntervalSeconds {
+                triggerBackgroundUpdate()
+            }
+            return
+        }
         if pendingLines.count >= updateChunkThreshold || (pendingLines.count >= 10 && elapsed >= updateIntervalSeconds) {
             triggerBackgroundUpdate()
         }
@@ -291,12 +379,13 @@ actor Summarizer {
     }
 
     private func runBackgroundUpdate(lines: [TranscriptLine]) async {
-        var succeeded = false
+        var shouldContinue = false
         defer {
             isUpdating = false
             lastUpdateTime = Date()
-            // If more lines accumulated while updating and the chunk succeeded, check if another update is needed
-            if succeeded, !isFinalizing, pendingLines.count >= updateChunkThreshold {
+            // If more lines accumulated while updating and the batch was resolved (succeeded or skipped),
+            // check if another update is needed for the next batch in the backlog.
+            if shouldContinue, !isFinalizing, pendingLines.count >= updateChunkThreshold {
                 triggerBackgroundUpdate()
             }
         }
@@ -304,15 +393,24 @@ actor Summarizer {
         do {
             let chunk = try await performChunkSummarize(lines: lines, index: chunkIndex)
             chunkIndex += 1
+            currentBatchFailureCount = 0
             partialSummaries.append(chunk)
             writeInterimSummaryToFileIfNeeded()
             if let onAppendChunk {
                 await onAppendChunk(chunk)
             }
-            succeeded = true
+            shouldContinue = true
         } catch {
-            // Re-queue the un-summarized lines at the front so they aren't lost
-            pendingLines.insert(contentsOf: lines, at: 0)
+            currentBatchFailureCount += 1
+            if currentBatchFailureCount >= maxChunkAttempts {
+                let reason = singleLine((error as? VoError)?.description ?? error.localizedDescription)
+                onNotice("vo: chunk summary failed after \(currentBatchFailureCount) attempts (\(reason)). Skipping batch of \(lines.count) utterances.")
+                currentBatchFailureCount = 0
+                shouldContinue = true
+            } else {
+                // Re-queue the un-summarized lines at the front for a retry after the backoff interval
+                pendingLines.insert(contentsOf: lines, at: 0)
+            }
         }
     }
 
